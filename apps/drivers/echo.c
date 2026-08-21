@@ -4,7 +4,8 @@
  * zig cc -target x86_64-windows-gnu -subsystem native.
  *
  * Cria \Device\Echo (+ link \DosDevices\Echo). IRP_MJ_WRITE guarda o texto,
- * IRP_MJ_READ devolve o ultimo texto escrito.
+ * IRP_MJ_READ devolve o ultimo texto escrito. IRP_MJ_PNP/START_DEVICE marca
+ * o dispositivo como iniciado (PnP).
  */
 
 typedef unsigned long long ULONG64;
@@ -15,7 +16,7 @@ typedef USHORT wchar_t;   /* sem headers libc: WCHAR = UTF-16 */
 
 /* structs do convidado (ABI documentada em system32/win32/ntoskrnl.js) */
 typedef struct { USHORT Length; USHORT MaximumLength; ULONG Pad; ULONG64 Buffer; } UNICODE_STRING;
-typedef struct { ULONG64 DispatchTable; ULONG64 DeviceList; } JSOS_DRIVER_OBJECT;
+typedef struct { ULONG64 DispatchTable; ULONG64 UnloadRoutine; } JSOS_DRIVER_OBJECT;
 typedef struct { ULONG64 DriverObject; ULONG64 Reserved; } JSOS_DEVICE_OBJECT;
 typedef struct {
     ULONG MajorFunction;
@@ -23,10 +24,13 @@ typedef struct {
     ULONG64 Buffer;
     ULONG64 BufferLength;
     ULONG64 ResultLength;
+    ULONG MinorFunction;
 } JSOS_IRP;
 
 #define IRP_MJ_READ  3
 #define IRP_MJ_WRITE 4
+#define IRP_MJ_PNP   0x1B
+#define IRP_MN_START_DEVICE 0
 #define STATUS_SUCCESS 0
 
 __declspec(dllimport) NTSTATUS DbgPrint(const char *message);
@@ -40,6 +44,7 @@ __declspec(dllimport) void RtlInitUnicodeString(UNICODE_STRING *out, const wchar
 /* ultimo texto escrito (persistente na imagem do driver) */
 static char lastText[256];
 static ULONG lastLength;
+static int pnpStarted;
 
 static NTSTATUS echoRead(ULONG64 devicePtr, ULONG64 irpPtr) {
     JSOS_IRP *irp = (JSOS_IRP *)(ULONG64)irpPtr;
@@ -66,6 +71,17 @@ static NTSTATUS echoWrite(ULONG64 devicePtr, ULONG64 irpPtr) {
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS echoPnp(ULONG64 devicePtr, ULONG64 irpPtr) {
+    JSOS_IRP *irp = (JSOS_IRP *)(ULONG64)irpPtr;
+    (void)devicePtr;
+    if (irp->MinorFunction == IRP_MN_START_DEVICE) {
+        pnpStarted = 1;
+        DbgPrint("echo.sys: PNP START_DEVICE\r\n");
+    }
+    irp->Status = STATUS_SUCCESS;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
     JSOS_DRIVER_OBJECT *driverObject = (JSOS_DRIVER_OBJECT *)(ULONG64)driverObjectPtr;
     ULONG64 *dispatch = (ULONG64 *)(ULONG64)driverObject->DispatchTable;
@@ -77,6 +93,7 @@ NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
 
     dispatch[IRP_MJ_READ]  = (ULONG64)(ULONG64)&echoRead;
     dispatch[IRP_MJ_WRITE] = (ULONG64)(ULONG64)&echoWrite;
+    dispatch[IRP_MJ_PNP]   = (ULONG64)(ULONG64)&echoPnp;
 
     RtlInitUnicodeString(&deviceName, L"\\Device\\Echo");
     RtlInitUnicodeString(&linkName, L"\\DosDevices\\Echo");

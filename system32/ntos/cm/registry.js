@@ -7,12 +7,12 @@
 // KEY_VALUE_*_INFORMATION: { u32 TitleIndex, u32 Type, u32 DataLength, Data }.
 // ===========================================================================
 
-// no da hive: { children: Map(lowercase->no), values: Map(lowercase->{name,type,data}) }
-function newKeyNode() {
-    return { children: new Map(), values: new Map() };
+// no da hive: { name, children: Map(lowercase->no), values: Map(lowercase->{name,type,data}) }
+function newKeyNode(name) {
+    return { name: name || '', children: new Map(), values: new Map() };
 }
 
-const hiveRoot = newKeyNode();
+const hiveRoot = newKeyNode('');
 
 function split(path) {
     return String(path).split('\\').filter(s => s.length > 0);
@@ -24,11 +24,24 @@ function walk(path, create) {
         const key = part.toLowerCase();
         if (!node.children.has(key)) {
             if (!create) return null;
-            node.children.set(key, newKeyNode());
+            node.children.set(key, newKeyNode(part));
         }
         node = node.children.get(key);
     }
     return node;
+}
+
+// lista nomes de subchaves (para enumerar Services etc.)
+function listKeys(path) {
+    const node = walk(path, false);
+    return node ? [...node.children.values()].map(c => c.name) : [];
+}
+
+// le um valor direto por caminho (sem handle; uso interno do kernel)
+function readValueByPath(path, valueName) {
+    const node = walk(path, false);
+    if (!node) return null;
+    return node.values.get(valueName.toLowerCase()) || null;
 }
 
 // ---- handles ----
@@ -73,4 +86,5 @@ function getValue(handle, valueName) {
     return node.values.get(valueName.toLowerCase()) || null;
 }
 
-module.exports = { openOrCreate, open, getNode, closeHandle, setValue, getValue };
+module.exports = { openOrCreate, open, getNode, closeHandle, setValue, getValue,
+                   listKeys, readValueByPath };

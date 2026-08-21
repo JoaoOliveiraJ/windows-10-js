@@ -108,42 +108,38 @@ function run() {
     os.execMachineCode(entry);
     assert(Win32.lastWrite.indexOf('jsOS') >= 0, 'exe chamou kernel32 WriteFile');
 
-    // driver nativo .sys (estilo WDM): PE loader + exports ntoskrnl em JS
-    Ntoskrnl.loadDriver('/echo.sys');
-    assert(ObjectManager.lookup('\\Device\\Echo'), 'driver criou \\Device\\Echo');
-    assert(ObjectManager.lookup('\\DosDevices\\Echo'), 'driver criou link simbolico');
+    // drivers de servico: carregados no BOOT via Registry (fase 1) + PnP start.
+    // O selftest so confere que estao vivos e funcionais:
+    const echoDevice = ObjectManager.lookup('\\Device\\Echo');
+    assert(echoDevice, 'echo carregado no boot (registry)');
+    assert(ObjectManager.lookup('\\DosDevices\\Echo'), 'link do echo criado');
+    assert(echoDevice.data.pnpStarted === true, 'echo recebeu PNP START_DEVICE');
     const writeRequest = IoManager.write('\\Device\\Echo', 'eco-nativo');
     assert(writeRequest.status === IoManager.STATUS.SUCCESS, 'IRP write nativo');
     assert(writeRequest.info === 10, 'driver nativo reportou 10 bytes escritos');
     const readRequest = IoManager.read('\\Device\\Echo');
     assert(readRequest.result === 'eco-nativo', 'driver nativo devolveu o eco');
 
-    // grupo 2: ciclo de vida de IRP (IoAllocateIrp/IoCompleteRequest/IoFreeIrp)
-    // helper: carrega um driver nativo, le do device, confere a resposta
-    function testNativeDriver(file, device, expected) {
-        Ntoskrnl.loadDriver(file);
-        assert(ObjectManager.lookup(device), 'device de ' + file);
+    // helper: device ja carregado no boot; confere que existe e le direito
+    function checkNativeDriver(device, expected) {
+        assert(ObjectManager.lookup(device), 'device ' + device + ' existe');
         const response = IoManager.read(device);
         assert(response.result === expected,
-               'read de ' + file + ' -> "' + response.result + '"');
+               'read de ' + device + ' -> "' + response.result + '"');
     }
-    testNativeDriver('/irplife.sys', '\\Device\\IrpLife', 'irp-life-ok');
-
-    // grupo 3: Rtl unicode strings (Compare/Copy/Equal)
-    testNativeDriver('/rtlstr.sys', '\\Device\\RtlStr', 'rtl-str-ok');
-
-    // grupo 4: Ke tempo (KeQuerySystemTime/KeQueryTickCount)
-    testNativeDriver('/ketime.sys', '\\Device\\KeTime', 'ke-time-ok');
-
-    // grupo 5: Mm memoria (MmAllocateNonCachedMemory/MmFreeNonCachedMemory)
-    testNativeDriver('/mmmem.sys', '\\Device\\MmMem', 'mm-mem-ok');
-
-    // grupo 6: Ex pool (ExAllocatePoolWithTag/ExFreePool) + IoDeleteDevice
-    testNativeDriver('/expool.sys', '\\Device\\ExPool', 'ex-pool-ok');
+    checkNativeDriver('\\Device\\IrpLife', 'irp-life-ok');
+    checkNativeDriver('\\Device\\RtlStr', 'rtl-str-ok');
+    checkNativeDriver('\\Device\\KeTime', 'ke-time-ok');
+    checkNativeDriver('\\Device\\MmMem', 'mm-mem-ok');
+    checkNativeDriver('\\Device\\ExPool', 'ex-pool-ok');
     assert(!ObjectManager.lookup('\\Device\\ExPoolTrash'),
            'IoDeleteDevice removeu o device do namespace');
+    checkNativeDriver('\\Device\\Interlock', 'interlock-ok');
+    checkNativeDriver('\\Device\\Irql', 'irql-ok');
+    checkNativeDriver('\\Device\\RtlAnsi', 'rtl-ansi-ok');
+    checkNativeDriver('\\Device\\Registry', 'registry-ok');
 
-    // grupo 7: ciclo de vida — unload real (DriverUnload + IoDeleteSymbolicLink)
+    // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS
     Ntoskrnl.loadDriver('/lifecycle.sys');
     assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');
     assert(ObjectManager.lookup('\\DosDevices\\LifeCycle'), 'lifecycle link criado');
@@ -154,18 +150,10 @@ function run() {
            'driver removido do namespace');
     assert(!ObjectManager.lookup('\\DosDevices\\LifeCycle'),
            'DriverUnload rodou e removeu o link');
-
-    // grupo 8: Interlocked* atomicas
-    testNativeDriver('/interlock.sys', '\\Device\\Interlock', 'interlock-ok');
-
-    // grupo 9: IRQL + spinlock (KeRaiseIrql/KeAcquireSpinLockRaiseToDpc...)
-    testNativeDriver('/irql.sys', '\\Device\\Irql', 'irql-ok');
-
-    // grupo 10: Rtl ANSI<->Unicode (conversao com alocacao real)
-    testNativeDriver('/rtlansi.sys', '\\Device\\RtlAnsi', 'rtl-ansi-ok');
-
-    // grupo 11: Registry Zw* (hive em JS, Configuration Manager)
-    testNativeDriver('/registry.sys', '\\Device\\Registry', 'registry-ok');
+    checkNativeDriver('\\Device\\Interlock', 'interlock-ok');
+    checkNativeDriver('\\Device\\Irql', 'irql-ok');
+    checkNativeDriver('\\Device\\RtlAnsi', 'rtl-ansi-ok');
+    checkNativeDriver('\\Device\\Registry', 'registry-ok');
 
     os.debugPrint('SELFTEST_OK');
 }

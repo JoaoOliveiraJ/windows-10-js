@@ -102,13 +102,15 @@ O jsOS espelha a arquitetura do Windows NT, com cada camada em JS:
 | Windows NT | jsOS | Módulo |
 |---|---|---|
 | HAL | primitivas de hardware | `hal/` C + `system32/drivers/` |
+| boot fases 0/1 | phase0 + phase1 (init em fases estilo NT) | `system32/init/` ✅ |
 | tabela de serviços | syscalls numeradas | `system32/ntos/ex/syscalls.js` |
-| **Object Manager** | namespace único, handles, refcount | `system32/ntos/ob/objmgr.js` ✅ |
+| **Object Manager** | namespace único, handles, refcount | `system32/ntos/ob/object-manager.js` ✅ |
 | Process Manager | escalonador cooperativo | `system32/ntos/ps/scheduler.js` |
-| I/O Manager (IRP) | — | próximo passo |
-| Config Manager (Registry) | — | depois |
+| I/O Manager (IRP) | IRPs + drivers JS/nativos | `system32/ntos/io/io-manager.js` ✅ |
+| PnP Manager | IRP_MJ_PNP / START_DEVICE | io-manager ✅ |
+| Config Manager (Registry) | hive em JS + Zw* para drivers | `system32/ntos/cm/` ✅ |
+| Services (carga por Registry) | drivers .sys lidos de \System\Services | `system32/ntos/cm/services.js` ✅ |
 | subsistema Win32 | mini-kernel32 + loader PE | `system32/win32/` |
-| ntdll (stubs user mode) | função `SYS()` | informal |
 
 O Object Manager (`ob/objmgr.js`) é a fundação NT: **tudo é objeto** —
 diretórios, arquivos, dispositivos, links simbólicos — num namespace único

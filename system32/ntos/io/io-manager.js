@@ -22,6 +22,7 @@ const IRP_MJ = {
     READ:           0x03,
     WRITE:          0x04,
     DEVICE_CONTROL: 0x0E,
+    PNP:            0x1B,
 };
 
 const STATUS = {
@@ -30,11 +31,16 @@ const STATUS = {
     NOT_SUPPORTED: -3,
 };
 
+// minor codes do IRP_MJ_PNP
+const IRP_MN = {
+    START_DEVICE: 0,
+};
+
 let nextIoRequestId = 1;
 
 function makeIoRequest(majorFunction, parameters) {
     return { id: nextIoRequestId++, major: majorFunction,
-             params: parameters || {},
+             params: parameters || {}, minor: (parameters && parameters.minor) || 0,
              status: STATUS.SUCCESS, result: null, info: 0 };
 }
 
@@ -99,6 +105,7 @@ function callNativeDriver(device, ioRequestPacket) {
     writeGuest64(irpAddress + 8, bufferAddress);
     writeGuest64(irpAddress + 16, data ? dataLength : 2048);
     writeGuest64(irpAddress + 24, 0);                     // resultLength
+    writeGuest32(irpAddress + 28, ioRequestPacket.minor); // minorFunction
 
     const guestStatus = os.execMsAbi(handlerAddress, devicePointer, irpAddress);
 
@@ -147,5 +154,14 @@ function deviceControl(devicePath, controlCode, parameters) {
                       Object.assign({ controlCode }, parameters)));
 }
 
-module.exports = { IRP_MJ, STATUS, makeIoRequest, init, createDriver, createDevice,
-                   callDriver, read, write, deviceControl };
+// PnP: manda IRP_MJ_PNP / IRP_MN_START_DEVICE ao device e marca o resultado
+function pnpStartDevice(device) {
+    const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.START_DEVICE });
+    callDriver('\\Device\\' + device.name, ioRequest);
+    device.data.pnpStarted = ioRequest.status === STATUS.SUCCESS;
+    return ioRequest.status;
+}
+
+module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
+                   createDevice, callDriver, read, write, deviceControl,
+                   pnpStartDevice };
