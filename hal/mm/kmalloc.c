@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define HEAP_START  0x1000000ULL                /* 16MB */
-#define RAM_CAP     0x40000000ULL               /* cap de 1GB */
+#define RAM_CAP     0x100000000ULL              /* cap de 4GB (identity map cobre 4GB) */
 #define E820_COUNT_ADDR  ((volatile uint16_t *)0x4FF0)
 #define E820_TABLE_ADDR  ((const e820_entry_t *)0x5000)
 

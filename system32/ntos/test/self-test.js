@@ -138,6 +138,11 @@ function run() {
     // grupo 5: Mm memoria (MmAllocateNonCachedMemory/MmFreeNonCachedMemory)
     testNativeDriver('/mmmem.sys', '\\Device\\MmMem', 'mm-mem-ok');
 
+    // grupo 6: Ex pool (ExAllocatePoolWithTag/ExFreePool) + IoDeleteDevice
+    testNativeDriver('/expool.sys', '\\Device\\ExPool', 'ex-pool-ok');
+    assert(!ObjectManager.lookup('\\Device\\ExPoolTrash'),
+           'IoDeleteDevice removeu o device do namespace');
+
     os.debugPrint('SELFTEST_OK');
 }
 

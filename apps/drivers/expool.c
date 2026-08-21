@@ -1,7 +1,7 @@
 /*
- * mmmem.c - driver demo do grupo "Mm memoria" do jsOS.
- * Usa MmAllocateNonCachedMemory / MmFreeNonCachedMemory; o \Device\MmMem
- * devolve "mm-mem-ok" se a memoria alocada gravou/leu um padrao correto.
+ * expool.c - driver demo do grupo "Ex pool" do jsOS.
+ * Usa ExAllocatePoolWithTag / ExFreePool; o \Device\ExPool devolve
+ * "ex-pool-ok" se a alocacao de pool gravou/leu corretamente.
  */
 
 typedef unsigned long long ULONG64;
@@ -22,6 +22,7 @@ typedef struct {
 
 #define IRP_MJ_READ 3
 #define STATUS_SUCCESS 0
+#define JSOS_TAG 0x534F534A   /* 'JSOS' */
 
 __declspec(dllimport) NTSTATUS DbgPrint(const char *message);
 __declspec(dllimport) NTSTATUS IoCreateDevice(ULONG64 driverObject, ULONG extensionSize,
@@ -29,14 +30,15 @@ __declspec(dllimport) NTSTATUS IoCreateDevice(ULONG64 driverObject, ULONG extens
                                               ULONG characteristics, ULONG exclusive,
                                               ULONG64 *outDevice);
 __declspec(dllimport) void RtlInitUnicodeString(UNICODE_STRING *out, const wchar_t *str);
-__declspec(dllimport) ULONG64 MmAllocateNonCachedMemory(ULONG size);
-__declspec(dllimport) void MmFreeNonCachedMemory(ULONG64 pointer, ULONG size);
+__declspec(dllimport) ULONG64 ExAllocatePoolWithTag(ULONG poolType, ULONG size, ULONG tag);
+__declspec(dllimport) void ExFreePool(ULONG64 pointer);
+__declspec(dllimport) void IoDeleteDevice(ULONG64 devicePtr);
 
 static int allPassed = 0;
 
-static NTSTATUS memoryRead(ULONG64 devicePtr, ULONG64 irpPtr) {
+static NTSTATUS poolRead(ULONG64 devicePtr, ULONG64 irpPtr) {
     JSOS_IRP *irp = (JSOS_IRP *)(ULONG64)irpPtr;
-    const char *message = allPassed ? "mm-mem-ok" : "mm-mem-fail";
+    const char *message = allPassed ? "ex-pool-ok" : "ex-pool-fail";
     char *buffer = (char *)(ULONG64)irp->Buffer;
     ULONG length = 0, i;
     (void)devicePtr;
@@ -58,30 +60,33 @@ NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
     int ok = 1;
     (void)registryPath;
 
-    DbgPrint("mmmem.sys: DriverEntry\r\n");
+    DbgPrint("expool.sys: DriverEntry\r\n");
 
-    /* aloca 8KB, grava padrao 0x5A, confere a leitura, libera */
-    block = MmAllocateNonCachedMemory(8192);
+    /* pool com tag 'JSOS': grava padrao 0xA7, confere, libera */
+    block = ExAllocatePoolWithTag(0, 4096, JSOS_TAG);
     if (block) {
         unsigned char *bytes = (unsigned char *)(ULONG64)block;
-        for (i = 0; i < 8192; i++) bytes[i] = 0x5A;
-        for (i = 0; i < 8192; i++) if (bytes[i] != 0x5A) { ok = 0; break; }
-        MmFreeNonCachedMemory(block, 8192);
-        /* free real: realocar o mesmo tamanho deve REUSAR o mesmo endereco */
-        {
-            ULONG64 again = MmAllocateNonCachedMemory(8192);
-            if (again != block) ok = 0;
-            MmFreeNonCachedMemory(again, 8192);
-        }
+        for (i = 0; i < 4096; i++) bytes[i] = 0xA7;
+        for (i = 0; i < 4096; i++) if (bytes[i] != 0xA7) { ok = 0; break; }
+        ExFreePool(block);
     } else {
         ok = 0;
     }
     allPassed = ok;
 
-    dispatch[IRP_MJ_READ] = (ULONG64)(ULONG64)&memoryRead;
-    RtlInitUnicodeString(&deviceName, L"\\Device\\MmMem");
+    dispatch[IRP_MJ_READ] = (ULONG64)(ULONG64)&poolRead;
+    RtlInitUnicodeString(&deviceName, L"\\Device\\ExPool");
     IoCreateDevice(driverObjectPtr, 0, &deviceName, 0, 0, 0, &devicePtr);
 
-    DbgPrint(allPassed ? "mmmem.sys: memoria ok\r\n" : "mmmem.sys: FALHOU\r\n");
+    /* IoDeleteDevice real: cria um device descartavel e o remove */
+    {
+        UNICODE_STRING trashName;
+        ULONG64 trashPtr = 0;
+        RtlInitUnicodeString(&trashName, L"\\Device\\ExPoolTrash");
+        IoCreateDevice(driverObjectPtr, 0, &trashName, 0, 0, 0, &trashPtr);
+        if (trashPtr) IoDeleteDevice(trashPtr);
+    }
+
+    DbgPrint(allPassed ? "expool.sys: pool ok\r\n" : "expool.sys: FALHOU\r\n");
     return STATUS_SUCCESS;
 }

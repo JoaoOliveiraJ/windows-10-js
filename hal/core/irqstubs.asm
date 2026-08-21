@@ -26,7 +26,7 @@ irq_stub_table:
 %assign i 0
 %rep NSTUBS
     mov edi, i              ; 5 bytes
-    jmp irq_common          ; 5 bytes -> stub = 10 bytes
+    jmp strict near irq_common     ; 5 bytes (E9 rel32 FORCADO) -> stub = 10 bytes
 %assign i i+1
 %endrep
 

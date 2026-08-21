@@ -16,25 +16,86 @@
 const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
 
-// heap de convidado para drivers: paginas de 4KB a partir de 6MB,
-// alocacoes arbitrarias (16-alinhadas) a partir de 7MB
-const GUEST_HEAP_BASE = 0x600000;
-const GUEST_BYTE_BASE = 0x700000;
-let guestHeapNext = GUEST_HEAP_BASE;
-let guestByteHeapNext = GUEST_BYTE_BASE;
+// heap de convidado para drivers: 9MB a partir de 64MB (longe das imagens
+// PE, que carregam em 0x400000+). Alocador de lista livre (estilo K&R) com
+// split e coalesce, guardado na propria memoria fisica do convidado.
+// Header de bloco (16B): +0 u32 size, +8 u32 next, +12 u32 free.
+const GUEST_HEAP_BASE = 0x4000000;
+const GUEST_HEAP_SIZE = 0x900000;   // 9MB: 0x4000000..0x48FFFFF
+const BLOCK_HEADER_SIZE = 16;
 
-function guestAllocPage() {
-    const page = guestHeapNext;
-    guestHeapNext += 0x1000;
-    for (let i = 0; i < 0x1000; i += 4) os.writePhysical32(page + i, 0);
-    return page;
+function readBlockSize(address)  { return os.readPhysical32(address); }
+function readBlockNext(address)  { return os.readPhysical32(address + 8); }
+function readBlockFree(address)  { return os.readPhysical32(address + 12); }
+function writeBlock(address, size, next, free) {
+    os.writePhysical32(address, size);
+    os.writePhysical32(address + 8, next);
+    os.writePhysical32(address + 12, free);
 }
 
-function guestAllocBytes(size) {
-    const address = guestByteHeapNext;
-    guestByteHeapNext += (size + 15) & ~15;
-    for (let i = 0; i < size; i += 4) os.writePhysical32(address + i, 0);
-    return address;
+let guestHeapReady = false;
+
+function initGuestHeap() {
+    writeBlock(GUEST_HEAP_BASE, GUEST_HEAP_SIZE - BLOCK_HEADER_SIZE, 0, 1);
+    guestHeapReady = true;
+}
+
+// aloca `size` bytes alinhados a `align`; retorna endereco fisico ou 0
+function guestAllocAligned(size, align) {
+    if (!guestHeapReady) initGuestHeap();
+    let block = GUEST_HEAP_BASE;
+    while (block) {
+        if (readBlockFree(block)) {
+            const dataStart = block + BLOCK_HEADER_SIZE;
+            let aligned = (dataStart + align - 1) & ~(align - 1);
+            let padding = aligned - dataStart;
+            if (padding > 0 && padding < BLOCK_HEADER_SIZE + 16) {
+                // padding pequeno demais p/ bloco livre: pula p/ o proximo
+                // alinhamento (padding vira >= BLOCK_HEADER_SIZE+16)
+                aligned += align;
+                padding += align;
+            }
+            const available = readBlockSize(block);
+            if (available >= padding + size) {
+                const oldNext = readBlockNext(block);
+                if (padding >= BLOCK_HEADER_SIZE + 16) {
+                    // sobra vira um bloco livre antes do bloco alinhado
+                    writeBlock(block, padding - BLOCK_HEADER_SIZE, aligned - BLOCK_HEADER_SIZE, 1);
+                    writeBlock(aligned - BLOCK_HEADER_SIZE, available - padding, oldNext, 1);
+                    block = aligned - BLOCK_HEADER_SIZE;
+                }
+                const remaining = readBlockSize(block) - size - BLOCK_HEADER_SIZE;
+                if (remaining >= 16) {
+                    const nextBlock = block + BLOCK_HEADER_SIZE + size;
+                    writeBlock(nextBlock, remaining - BLOCK_HEADER_SIZE, readBlockNext(block), 1);
+                    writeBlock(block, size, nextBlock, 0);
+                } else {
+                    writeBlock(block, readBlockSize(block), readBlockNext(block), 0);
+                }
+                // bloco devolvido sempre zerado (dispatch tables, IRPs...)
+                for (let i = 0; i < size; i += 4)
+                    os.writePhysical32(block + BLOCK_HEADER_SIZE + i, 0);
+                return block + BLOCK_HEADER_SIZE;
+            }
+        }
+        block = readBlockNext(block);
+    }
+    return 0;   // sem memoria
+}
+
+function guestAllocPage()  { return guestAllocAligned(0x1000, 0x1000); }
+function guestAllocBytes(size) { return guestAllocAligned(size, 16); }
+
+function guestFreeBytes(pointer) {
+    if (!pointer) return;
+    const block = pointer - BLOCK_HEADER_SIZE;
+    os.writePhysical32(block + 12, 1);
+    const next = readBlockNext(block);
+    if (next && readBlockFree(next) &&
+        block + BLOCK_HEADER_SIZE + readBlockSize(block) === next) {
+        writeBlock(block, readBlockSize(block) + BLOCK_HEADER_SIZE + readBlockSize(next),
+                   readBlockNext(next), 1);
+    }
 }
 
 // driver sendo inicializado no momento (entre beginDriver/endDriver)
@@ -105,6 +166,8 @@ const exportNames = [
     'KeQueryTickCount',
     'MmAllocateNonCachedMemory',
     'MmFreeNonCachedMemory',
+    'ExAllocatePoolWithTag',
+    'ExFreePool',
 ];
 
 const exportHandlers = [
@@ -136,8 +199,19 @@ const exportHandlers = [
                                     readUnicodeString(targetPointer));
         return 0;
     },
-    // IoDeleteDevice(devicePointer)
-    (_devicePointer) => 0,   // toy: sem remocao de namespace ainda
+    // IoDeleteDevice(devicePointer): remove o device do namespace
+    (devicePointer) => {
+        const driverRoot = ObjectManager.lookup('\\Device');
+        if (driverRoot && driverRoot.children) {
+            for (const child of [...driverRoot.children.values()]) {
+                if (child.data && child.data.nativeDevicePointer === devicePointer) {
+                    ObjectManager.unlink('\\Device\\' + child.name);
+                    return 0;
+                }
+            }
+        }
+        return 0;
+    },
     // RtlInitUnicodeString(outputPointer, wideStringPointer)
     (outputPointer, wideStringPointer) => {
         writeUnicodeString(outputPointer, readGuestWideString(wideStringPointer));
@@ -150,8 +224,8 @@ const exportHandlers = [
     },
     // IoAllocateIrp(stackSize, chargeQuota) -> IRP zerado (pagina do convidado)
     (_stackSize, _chargeQuota) => guestAllocPage(),
-    // IoFreeIrp(ioRequestPointer) -> heap bump: no-op por enquanto
-    (_ioRequestPointer) => 0,
+    // IoFreeIrp(ioRequestPointer)
+    (ioRequestPointer) => { guestFreeBytes(ioRequestPointer); return 0; },
     // RtlCompareUnicodeString(ptrA, ptrB, caseInsensitive) -> <0/0/>0
     (pointerA, pointerB, caseInsensitive) => {
         let a = readUnicodeString(pointerA), b = readUnicodeString(pointerB);
@@ -185,8 +259,12 @@ const exportHandlers = [
     },
     // MmAllocateNonCachedMemory(size) -> memoria fisica zerada
     (size) => guestAllocBytes(size),
-    // MmFreeNonCachedMemory(pointer, size) -> heap bump: no-op por enquanto
-    (_pointer, _size) => 0,
+    // MmFreeNonCachedMemory(pointer, size)
+    (pointer, _size) => { guestFreeBytes(pointer); return 0; },
+    // ExAllocatePoolWithTag(poolType, size, tag) -> idem (tag ignorada por ora)
+    (_poolType, size, _tag) => guestAllocBytes(size),
+    // ExFreePool(pointer)
+    (pointer) => { guestFreeBytes(pointer); return 0; },
 ];
 
 function lookup(dllName, functionName) {
@@ -196,13 +274,13 @@ function lookup(dllName, functionName) {
 }
 
 // handler chamado pelo C (js_win32_dispatch; id ja sem o offset 32)
-function handle(id, arg1, arg2, arg3, arg4) {
+function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
     const handlerFunction = exportHandlers[id];
     if (!handlerFunction) {
         os.debugPrint('[ntoskrnl] export desconhecido id=' + id);
         return 0;
     }
-    return handlerFunction(arg1, arg2, arg3, arg4);
+    return handlerFunction(arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 // ---- ciclo de vida do driver nativo ----

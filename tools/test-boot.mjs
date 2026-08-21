@@ -18,8 +18,8 @@ const qemu = process.env.QEMU || 'C:/Program Files/qemu/qemu-system-x86_64.exe';
 function tryBoot(accelArgs) {
     return new Promise((resolve) => {
         const args = [
-            ...accelArgs,
-            '-m', '128',
+            '-accel', 'whpx',
+            '-m', '4096',
             '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,
             '-drive', `format=raw,if=ide,index=1,media=disk,file=${path.join(root, 'build', 'ntfs.img')}`,
             '-display', 'none',

@@ -66,12 +66,13 @@ JSContext *js_host_ctx(void) {
  * ids 0-31: kernel32 (Win32.handle); ids 32-63: ntoskrnl (Ntoskrnl.handle) */
 
 uint64_t js_win32_dispatch(uint64_t id, uint64_t a1, uint64_t a2,
-                           uint64_t a3, uint64_t a4) {
-    JSValue global, table, handle, args[5], ret;
+                           uint64_t a3, uint64_t a4, uint64_t a5,
+                           uint64_t a6, uint64_t a7) {
+    JSValue global, table, handle, args[8], ret;
     const char *tableName;
     int64_t r = 0;
     int i;
-    uint64_t raw[5] = { id, a1, a2, a3, a4 };
+    uint64_t raw[8] = { id, a1, a2, a3, a4, a5, a6, a7 };
 
     if (!g_ctx) return 0;
     if (id >= 32) {
@@ -84,16 +85,16 @@ uint64_t js_win32_dispatch(uint64_t id, uint64_t a1, uint64_t a2,
     table = JS_GetPropertyStr(g_ctx, global, tableName);
     if (!JS_IsObject(table)) { JS_FreeValue(g_ctx, table); JS_FreeValue(g_ctx, global); return 0; }
     handle = JS_GetPropertyStr(g_ctx, table, "handle");
-    for (i = 0; i < 5; i++)
+    for (i = 0; i < 8; i++)
         args[i] = JS_NewFloat64(g_ctx, (double)raw[i]);
-    ret = JS_Call(g_ctx, handle, table, 5, (JSValueConst *)args);
+    ret = JS_Call(g_ctx, handle, table, 8, (JSValueConst *)args);
     if (JS_IsException(ret)) {
         jsos_dump_exception(g_ctx);
     } else {
         JS_ToInt64(g_ctx, &r, ret);
     }
     JS_FreeValue(g_ctx, ret);
-    for (i = 0; i < 5; i++) JS_FreeValue(g_ctx, args[i]);
+    for (i = 0; i < 8; i++) JS_FreeValue(g_ctx, args[i]);
     JS_FreeValue(g_ctx, handle);
     JS_FreeValue(g_ctx, table);
     JS_FreeValue(g_ctx, global);

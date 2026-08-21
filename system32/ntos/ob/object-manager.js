@@ -153,4 +153,16 @@ function lookup(path) {
     return resolve(path).node;
 }
 
-module.exports = { createDirectory, createObject, createSymlink, mount, open, getObject, close, refs, dump, lookup };
+// remove um objeto do namespace (devolve true se removeu)
+function unlink(path) {
+    const parts = split(path);
+    if (parts.length === 0) return false;
+    const name = parts[parts.length - 1].toLowerCase();
+    const parentPath = '\\' + parts.slice(0, -1).join('\\');
+    const parent = resolve(parentPath === '\\' ? '\\' : parentPath).node;
+    if (!parent || !parent.children) return false;
+    return parent.children.delete(name);
+}
+
+module.exports = { createDirectory, createObject, createSymlink, mount, open,
+                   getObject, close, refs, dump, lookup, unlink };
