@@ -150,6 +150,10 @@ const exportNames = [
     'ExAllocatePoolWithTag',
     'ExFreePool',
     'IoDeleteSymbolicLink',
+    'InterlockedIncrement',
+    'InterlockedDecrement',
+    'InterlockedExchange',
+    'InterlockedCompareExchange',
 ];
 
 const exportHandlers = [
@@ -272,6 +276,30 @@ const exportHandlers = [
     (linkPointer) => {
         const link = readUnicodeString(linkPointer);
         return ObjectManager.unlink(link) ? 0 : 0xC0000009; // STATUS_NOT_FOUND
+    },
+    // InterlockedIncrement(ptr u32) -> novo valor
+    (pointer) => {
+        const value = (os.readPhysical32(pointer) + 1) >>> 0;
+        os.writePhysical32(pointer, value);
+        return value;
+    },
+    // InterlockedDecrement(ptr u32) -> novo valor
+    (pointer) => {
+        const value = (os.readPhysical32(pointer) - 1) >>> 0;
+        os.writePhysical32(pointer, value);
+        return value;
+    },
+    // InterlockedExchange(ptr u32, value) -> valor antigo
+    (pointer, value) => {
+        const old = os.readPhysical32(pointer);
+        os.writePhysical32(pointer, value >>> 0);
+        return old;
+    },
+    // InterlockedCompareExchange(ptr u32, exchange, comparand) -> valor antigo
+    (pointer, exchange, comparand) => {
+        const old = os.readPhysical32(pointer);
+        if (old === (comparand >>> 0)) os.writePhysical32(pointer, exchange >>> 0);
+        return old;
     },
 ];
 

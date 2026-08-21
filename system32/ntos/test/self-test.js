@@ -155,6 +155,9 @@ function run() {
     assert(!ObjectManager.lookup('\\DosDevices\\LifeCycle'),
            'DriverUnload rodou e removeu o link');
 
+    // grupo 8: Interlocked* atomicas
+    testNativeDriver('/interlock.sys', '\\Device\\Interlock', 'interlock-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 
