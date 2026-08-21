@@ -135,6 +135,9 @@ function run() {
     // grupo 4: Ke tempo (KeQuerySystemTime/KeQueryTickCount)
     testNativeDriver('/ketime.sys', '\\Device\\KeTime', 'ke-time-ok');
 
+    // grupo 5: Mm memoria (MmAllocateNonCachedMemory/MmFreeNonCachedMemory)
+    testNativeDriver('/mmmem.sys', '\\Device\\MmMem', 'mm-mem-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

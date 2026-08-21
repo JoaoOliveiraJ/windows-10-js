@@ -124,7 +124,7 @@ driverSources.forEach((driverSource, index) => {
     // cada driver num ImageBase proprio (sem relocs ainda): 0x500000 + 1MB cada
     const imageBase = '0x' + (0x500000 + index * 0x100000).toString(16);
     const sysFile = path.join(buildDir, driverName + '.sys');
-    run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-O2',
+    run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-fno-builtin', '-O2',
         '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,' + imageBase,
         driverSource, path.join(buildDir, 'ntoskrnl.lib'), '-o', sysFile]);
     builtDrivers.push({ name: 'apps/' + driverName + '.sys', file: sysFile });

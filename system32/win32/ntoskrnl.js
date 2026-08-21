@@ -16,15 +16,25 @@
 const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
 
-// heap de convidado para drivers: paginas de 4KB a partir de 6MB
+// heap de convidado para drivers: paginas de 4KB a partir de 6MB,
+// alocacoes arbitrarias (16-alinhadas) a partir de 7MB
 const GUEST_HEAP_BASE = 0x600000;
+const GUEST_BYTE_BASE = 0x700000;
 let guestHeapNext = GUEST_HEAP_BASE;
+let guestByteHeapNext = GUEST_BYTE_BASE;
 
 function guestAllocPage() {
     const page = guestHeapNext;
     guestHeapNext += 0x1000;
     for (let i = 0; i < 0x1000; i += 4) os.writePhysical32(page + i, 0);
     return page;
+}
+
+function guestAllocBytes(size) {
+    const address = guestByteHeapNext;
+    guestByteHeapNext += (size + 15) & ~15;
+    for (let i = 0; i < size; i += 4) os.writePhysical32(address + i, 0);
+    return address;
 }
 
 // driver sendo inicializado no momento (entre beginDriver/endDriver)
@@ -93,6 +103,8 @@ const exportNames = [
     'RtlEqualUnicodeString',
     'KeQuerySystemTime',
     'KeQueryTickCount',
+    'MmAllocateNonCachedMemory',
+    'MmFreeNonCachedMemory',
 ];
 
 const exportHandlers = [
@@ -171,6 +183,10 @@ const exportHandlers = [
         os.writePhysical32(outputPointer + 4, Math.floor(ticks / 0x100000000));
         return 0;
     },
+    // MmAllocateNonCachedMemory(size) -> memoria fisica zerada
+    (size) => guestAllocBytes(size),
+    // MmFreeNonCachedMemory(pointer, size) -> heap bump: no-op por enquanto
+    (_pointer, _size) => 0,
 ];
 
 function lookup(dllName, functionName) {
