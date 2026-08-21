@@ -158,6 +158,9 @@ function run() {
     // grupo 8: Interlocked* atomicas
     testNativeDriver('/interlock.sys', '\\Device\\Interlock', 'interlock-ok');
 
+    // grupo 9: IRQL + spinlock (KeRaiseIrql/KeAcquireSpinLockRaiseToDpc...)
+    testNativeDriver('/irql.sys', '\\Device\\Irql', 'irql-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

@@ -129,6 +129,11 @@ function readUnicodeString(pointer) {
     return text;
 }
 
+// ---- IRQL: estado real do kernel (PASSIVE=0, APC=1, DISPATCH=2...) ----
+let currentIrql = 0;   // PASSIVE_LEVEL
+
+const DISPATCH_LEVEL = 2;
+
 // ---- a tabela de exports (a ORDEM define o id: id real = 32 + indice) ----
 
 const exportNames = [
@@ -154,6 +159,12 @@ const exportNames = [
     'InterlockedDecrement',
     'InterlockedExchange',
     'InterlockedCompareExchange',
+    'KeGetCurrentIrql',
+    'KeRaiseIrql',
+    'KeLowerIrql',
+    'KeInitializeSpinLock',
+    'KeAcquireSpinLockRaiseToDpc',
+    'KeReleaseSpinLock',
 ];
 
 const exportHandlers = [
@@ -300,6 +311,38 @@ const exportHandlers = [
         const old = os.readPhysical32(pointer);
         if (old === (comparand >>> 0)) os.writePhysical32(pointer, exchange >>> 0);
         return old;
+    },
+    // KeGetCurrentIrql() -> IRQL atual
+    () => currentIrql,
+    // KeRaiseIrql(newIrql, outOldPtr) -> sobe; grava o antigo
+    (newIrql, outOldPointer) => {
+        if (newIrql < currentIrql) {
+            os.debugPrint('[ntoskrnl] BUG: KeRaiseIrql p/ nivel menor');
+            os.halt();
+        }
+        if (outOldPointer) os.writePhysical32(outOldPointer, currentIrql);
+        currentIrql = newIrql;
+        return 0;
+    },
+    // KeLowerIrql(newIrql)
+    (newIrql) => { currentIrql = newIrql; return 0; },
+    // KeInitializeSpinLock(ptr u32)
+    (pointer) => { os.writePhysical32(pointer, 0); return 0; },
+    // KeAcquireSpinLockRaiseToDpc(ptr, outOldIrqlPtr): sobe a DISPATCH + adquire
+    (pointer, outOldIrqlPointer) => {
+        if (outOldIrqlPointer) os.writePhysical32(outOldIrqlPointer, currentIrql);
+        currentIrql = DISPATCH_LEVEL;
+        // spin real: test-and-set ate estar livre (single CPU: 1 passada)
+        for (;;) {
+            const old = os.readPhysical32(pointer);
+            if (old === 0) { os.writePhysical32(pointer, 1); return 0; }
+        }
+    },
+    // KeReleaseSpinLock(ptr, oldIrql): libera + volta ao IRQL anterior
+    (pointer, oldIrql) => {
+        os.writePhysical32(pointer, 0);
+        currentIrql = oldIrql;
+        return 0;
     },
 ];
 
