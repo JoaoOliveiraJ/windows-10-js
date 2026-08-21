@@ -164,6 +164,9 @@ function run() {
     // grupo 10: Rtl ANSI<->Unicode (conversao com alocacao real)
     testNativeDriver('/rtlansi.sys', '\\Device\\RtlAnsi', 'rtl-ansi-ok');
 
+    // grupo 11: Registry Zw* (hive em JS, Configuration Manager)
+    testNativeDriver('/registry.sys', '\\Device\\Registry', 'registry-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

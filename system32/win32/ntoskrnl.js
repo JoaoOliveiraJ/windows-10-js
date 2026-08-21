@@ -15,6 +15,7 @@
 
 const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
+const Registry = require('ntos/cm/registry');
 
 // heap de convidado para drivers: 9MB a partir de 64MB (longe das imagens
 // PE, que carregam em 0x400000+). Alocador de lista livre (estilo K&R) com
@@ -170,6 +171,11 @@ const exportNames = [
     'RtlUnicodeStringToAnsiString',
     'RtlFreeAnsiString',
     'RtlFreeUnicodeString',
+    'ZwCreateKey',
+    'ZwOpenKey',
+    'ZwSetValueKey',
+    'ZwQueryValueKey',
+    'ZwClose',
 ];
 
 const exportHandlers = [
@@ -409,6 +415,57 @@ const exportHandlers = [
         os.writePhysical32(pointer + 8, 0);
         os.writePhysical32(pointer + 12, 0);
         return 0;
+    },
+    // ---- Registry (Configuration Manager em ntos/cm/registry.js) ----
+    // OBJECT_ATTRIBUTES simplificado: +8 u64 ObjectName(UNICODE_STRING*)
+    // ZwCreateKey(outHandlePtr u64, access, objAttrsPtr) -> NTSTATUS
+    (outHandlePointer, _access, objAttrsPointer) => {
+        const namePointer = os.readPhysical32(objAttrsPointer + 8);
+        const keyPath = readUnicodeString(namePointer);
+        const handle = Registry.openOrCreate(keyPath);
+        os.writePhysical32(outHandlePointer, handle >>> 0);
+        os.writePhysical32(outHandlePointer + 4, 0);
+        return handle ? 0 : 0xC0000009;
+    },
+    // ZwOpenKey(outHandlePtr, access, objAttrsPtr) -> so abre se existir
+    (outHandlePointer, _access, objAttrsPointer) => {
+        const namePointer = os.readPhysical32(objAttrsPointer + 8);
+        const keyPath = readUnicodeString(namePointer);
+        const handle = Registry.open(keyPath);
+        if (!handle) return 0xC0000009;         // STATUS_NOT_FOUND
+        os.writePhysical32(outHandlePointer, handle >>> 0);
+        os.writePhysical32(outHandlePointer + 4, 0);
+        return 0;
+    },
+    // ZwSetValueKey(handle, valueNameUniPtr, titleIndex, type, dataPtr, dataSize)
+    (keyHandle, valueNamePointer, _titleIndex, valueType, dataPointer, dataSize) => {
+        const valueName = readUnicodeString(valueNamePointer);
+        const data = [];
+        for (let i = 0; i < dataSize; i++)
+            data.push(os.readPhysical8(dataPointer + i));
+        return Registry.setValue(keyHandle, valueName, valueType, data) ? 0 : 0xC0000009;
+    },
+    // ZwQueryValueKey(handle, valueNameUniPtr, infoClass, outBufPtr, bufSize, outLenPtr)
+    // escreve KEY_VALUE_*_INFORMATION: +0 TitleIndex, +4 Type, +8 DataLength, +12 Data
+    (keyHandle, valueNamePointer, _infoClass, outBufferPointer, bufferSize, outLengthPointer) => {
+        const valueName = readUnicodeString(valueNamePointer);
+        const entry = Registry.getValue(keyHandle, valueName);
+        if (!entry) return 0xC0000009;
+        if (bufferSize < 12 + entry.data.length) {
+            os.writePhysical32(outLengthPointer, 12 + entry.data.length);
+            return 0xC0000023;   // STATUS_BUFFER_TOO_SMALL
+        }
+        os.writePhysical32(outBufferPointer, 0);
+        os.writePhysical32(outBufferPointer + 4, entry.type);
+        os.writePhysical32(outBufferPointer + 8, entry.data.length);
+        for (let i = 0; i < entry.data.length; i++)
+            os.writePhysical8(outBufferPointer + 12 + i, entry.data[i]);
+        os.writePhysical32(outLengthPointer, 12 + entry.data.length);
+        return 0;
+    },
+    // ZwClose(handle)
+    (keyHandle) => {
+        return Registry.closeHandle(keyHandle) ? 0 : 0xC0000008; // STATUS_INVALID_HANDLE
     },
 ];
 
