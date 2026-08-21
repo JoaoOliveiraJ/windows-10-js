@@ -46,6 +46,9 @@ int  host_read_file(const char *name, const char **out_buf, size_t *out_size);
 /* RAM total detectada via E820 (bytes) */
 uint64_t host_ram_size(void);
 
+/* arena de 16MB para o heap dos drivers convidados (base fisica) */
+uint64_t host_guest_arena(void);
+
 /* panico: mensagem + halt */
 void host_panic(const char *msg) __attribute__((noreturn));
 

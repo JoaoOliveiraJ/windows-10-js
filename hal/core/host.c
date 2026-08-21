@@ -122,8 +122,6 @@ int host_read_file(const char *name, const char **out_buf, size_t *out_size) {
     return -1;
 }
 
-/* ---- fim ---- */
-
 void host_halt(void) {
     __asm__ volatile("cli");
     for (;;) __asm__ volatile("hlt");
@@ -136,7 +134,19 @@ void host_panic(const char *msg) {
     host_halt();
 }
 
+static uint64_t guest_arena_base;
+
 void host_init(void) {
     serial_init();
     kmalloc_init();
+    /* arena de 16MB para o heap dos drivers convidados (dentro do heap do
+     * kernel, que comeca em 32MB): sub-alocada pelo free-list em JS */
+    guest_arena_base = (uint64_t)(uintptr_t)kmalloc(16u << 20);
+    if (!guest_arena_base) host_panic("arena de convidado falhou");
+}
+
+/* ---- arena do heap de convidado (drivers) ---- */
+
+uint64_t host_guest_arena(void) {
+    return guest_arena_base;
 }

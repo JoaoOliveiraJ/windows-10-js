@@ -6,7 +6,7 @@
 #include "../core/drivers.h"
 #include <string.h>
 
-#define HEAP_START  0x1000000ULL                /* 16MB */
+#define HEAP_START  0x2000000ULL                /* 32MB (acima de imagens PE+drivers) */
 #define RAM_CAP     0x100000000ULL              /* cap de 4GB (identity map cobre 4GB) */
 #define E820_COUNT_ADDR  ((volatile uint16_t *)0x4FF0)
 #define E820_TABLE_ADDR  ((const e820_entry_t *)0x5000)

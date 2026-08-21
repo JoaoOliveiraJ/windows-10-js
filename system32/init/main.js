@@ -67,7 +67,7 @@ function kmain() {
     Scheduler.spawn('kbd-service', KbdService);
     Scheduler.spawn('shell', Shell.main);
     os.debugPrint('[kernel] idle loop - escalonador cooperativo ativo');
-    for (;;) Scheduler.tick();
+    for (;;) { Scheduler.tick(); Ntoskrnl.runKernelTasks(); }
 }
 
 kmain();

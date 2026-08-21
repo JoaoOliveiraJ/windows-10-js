@@ -155,6 +155,14 @@ function run() {
     checkNativeDriver('\\Device\\RtlAnsi', 'rtl-ansi-ok');
     checkNativeDriver('\\Device\\Registry', 'registry-ok');
 
+    // grupo 12: DPC + work item + thread de kernel (cooperativo real)
+    Ntoskrnl.loadDriver('/threads.sys');
+    assert(ObjectManager.lookup('\\Device\\Threads'), 'threads device criado');
+    for (let i = 0; i < 20; i++) { Ntoskrnl.runKernelTasks(); Scheduler.tick(); }
+    const threadsRead = IoManager.read('\\Device\\Threads');
+    assert(threadsRead.result === 'threads-ok',
+           'DPC + work item + thread rodaram -> "' + threadsRead.result + '"');
+
     os.debugPrint('SELFTEST_OK');
 }
 

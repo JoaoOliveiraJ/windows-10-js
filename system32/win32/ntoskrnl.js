@@ -17,12 +17,11 @@ const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
 const Registry = require('ntos/cm/registry');
 
-// heap de convidado para drivers: 9MB a partir de 64MB (longe das imagens
-// PE, que carregam em 0x400000+). Alocador de lista livre (estilo K&R) com
-// split e coalesce, guardado na propria memoria fisica do convidado.
+// heap de convidado para drivers: arena de 16MB alocada do heap do kernel
+// (kmalloc) no boot; o free-list em JS sub-aloca. Sem colisao com imagens PE.
 // Header de bloco (16B): +0 u32 size, +8 u32 next, +12 u32 free.
-const GUEST_HEAP_BASE = 0x4000000;
-const GUEST_HEAP_SIZE = 0x900000;   // 9MB: 0x4000000..0x48FFFFF
+const GUEST_HEAP_SIZE = 0x1000000;   // 16MB
+let GUEST_HEAP_BASE = 0;             // definido no primeiro alloc
 const BLOCK_HEADER_SIZE = 16;
 
 function readBlockSize(address)  { return os.readPhysical32(address); }
@@ -37,6 +36,7 @@ function writeBlock(address, size, next, free) {
 let guestHeapReady = false;
 
 function initGuestHeap() {
+    GUEST_HEAP_BASE = os.getGuestArenaBase();
     writeBlock(GUEST_HEAP_BASE, GUEST_HEAP_SIZE - BLOCK_HEADER_SIZE, 0, 1);
     guestHeapReady = true;
 }
@@ -130,10 +130,11 @@ function readUnicodeString(pointer) {
     return text;
 }
 
-// ---- IRQL: estado real do kernel (PASSIVE=0, APC=1, DISPATCH=2...) ----
-let currentIrql = 0;   // PASSIVE_LEVEL
-
-const DISPATCH_LEVEL = 2;
+// ---- IRQL/DPC/WorkItems/Threads: logica nos modulos NT (ke/, io/, ps/) ----
+const Irql = require('ntos/ke/irql');
+const KeDpc = require('ntos/ke/dpc');
+const WorkItems = require('ntos/io/work-items');
+const KernelThreads = require('ntos/ps/kernel-threads');
 
 // ---- a tabela de exports (a ORDEM define o id: id real = 32 + indice) ----
 
@@ -176,6 +177,14 @@ const exportNames = [
     'ZwSetValueKey',
     'ZwQueryValueKey',
     'ZwClose',
+    'KeInitializeDpc',
+    'KeInsertQueueDpc',
+    'KeRemoveQueueDpc',
+    'IoAllocateWorkItem',
+    'IoQueueWorkItem',
+    'IoFreeWorkItem',
+    'PsCreateSystemThread',
+    'PsTerminateSystemThread',
 ];
 
 const exportHandlers = [
@@ -324,25 +333,21 @@ const exportHandlers = [
         return old;
     },
     // KeGetCurrentIrql() -> IRQL atual
-    () => currentIrql,
+    () => Irql.getIrql(),
     // KeRaiseIrql(newIrql, outOldPtr) -> sobe; grava o antigo
     (newIrql, outOldPointer) => {
-        if (newIrql < currentIrql) {
-            os.debugPrint('[ntoskrnl] BUG: KeRaiseIrql p/ nivel menor');
-            os.halt();
-        }
-        if (outOldPointer) os.writePhysical32(outOldPointer, currentIrql);
-        currentIrql = newIrql;
+        const oldIrql = Irql.raiseIrql(newIrql);
+        if (outOldPointer) os.writePhysical32(outOldPointer, oldIrql);
         return 0;
     },
     // KeLowerIrql(newIrql)
-    (newIrql) => { currentIrql = newIrql; return 0; },
+    (newIrql) => { Irql.lowerIrql(newIrql); return 0; },
     // KeInitializeSpinLock(ptr u32)
     (pointer) => { os.writePhysical32(pointer, 0); return 0; },
     // KeAcquireSpinLockRaiseToDpc(ptr, outOldIrqlPtr): sobe a DISPATCH + adquire
     (pointer, outOldIrqlPointer) => {
-        if (outOldIrqlPointer) os.writePhysical32(outOldIrqlPointer, currentIrql);
-        currentIrql = DISPATCH_LEVEL;
+        if (outOldIrqlPointer) os.writePhysical32(outOldIrqlPointer, Irql.getIrql());
+        Irql.raiseIrql(Irql.DISPATCH_LEVEL);
         // spin real: test-and-set ate estar livre (single CPU: 1 passada)
         for (;;) {
             const old = os.readPhysical32(pointer);
@@ -352,7 +357,7 @@ const exportHandlers = [
     // KeReleaseSpinLock(ptr, oldIrql): libera + volta ao IRQL anterior
     (pointer, oldIrql) => {
         os.writePhysical32(pointer, 0);
-        currentIrql = oldIrql;
+        Irql.lowerIrql(oldIrql);
         return 0;
     },
     // RtlInitAnsiString(outPtr, cstrPtr): aponta o buffer (sem alocar)
@@ -467,6 +472,40 @@ const exportHandlers = [
     (keyHandle) => {
         return Registry.closeHandle(keyHandle) ? 0 : 0xC0000008; // STATUS_INVALID_HANDLE
     },
+    // ---- DPCs / WorkItems / Threads de kernel (modulos ke/, io/, ps/) ----
+    // KeInitializeDpc(dpcPtr, routinePtr, contextPtr)
+    (dpcPointer, routinePointer, contextPointer) => {
+        KeDpc.initializeDpc(dpcPointer, routinePointer, contextPointer);
+        return 0;
+    },
+    // KeInsertQueueDpc(dpcPtr, sysArg1, sysArg2) -> 1 se enfileirou
+    (dpcPointer, sysArg1, sysArg2) => KeDpc.insertQueueDpc(dpcPointer, sysArg1, sysArg2),
+    // KeRemoveQueueDpc(dpcPtr) -> 1 se estava na fila
+    (dpcPointer) => KeDpc.removeQueueDpc(dpcPointer),
+    // IoAllocateWorkItem(devicePtr) -> itemPointer
+    (devicePointer) => {
+        const itemPointer = guestAllocBytes(0x100);
+        WorkItems.createWorkItem(devicePointer, itemPointer);
+        return itemPointer;
+    },
+    // IoQueueWorkItem(itemPtr, routinePtr, queueType, contextPtr)
+    (itemPointer, routinePointer, queueType, contextPointer) => {
+        WorkItems.queueWorkItem(itemPointer, routinePointer, queueType, contextPointer);
+        return 0;
+    },
+    // IoFreeWorkItem(itemPtr)
+    (itemPointer) => {
+        WorkItems.unqueue(itemPointer);
+        guestFreeBytes(itemPointer);
+        return 0;
+    },
+    // PsCreateSystemThread(outHandlePtr, access, objAttrs, procHandle, clientId, startRoutinePtr, contextPtr)
+    (outHandlePointer, _access, _objAttrs, _processHandle, _clientId, startRoutinePointer, contextPointer) => {
+        KernelThreads.createSystemThread(outHandlePointer, startRoutinePointer, contextPointer);
+        return 0;
+    },
+    // PsTerminateSystemThread(status)
+    (_status) => KernelThreads.terminateCurrentThread(),
 ];
 
 function lookup(dllName, functionName) {
@@ -505,6 +544,12 @@ function beginDriver(driverName) {
 
 function endDriver() { currentDriver = null; }
 
+// o kernel drena DPCs + work items no idle loop (como o NT ao cair de DISPATCH)
+function runKernelTasks() {
+    KeDpc.runQueue();
+    WorkItems.runQueue();
+}
+
 // descarrega um driver nativo DE VERDADE: chama DriverUnload (se o driver
 // registrou uma, em DRIVER_OBJECT+8), remove devices + driver do namespace
 // e libera as paginas do driver object
@@ -541,4 +586,5 @@ function loadDriver(filePath) {
 // o C (js_win32_dispatch) procura globalThis.Ntoskrnl.handle
 globalThis.Ntoskrnl = { handle };
 
-module.exports = { lookup, beginDriver, endDriver, exportNames, loadDriver, unloadDriver };
+module.exports = { lookup, beginDriver, endDriver, exportNames, loadDriver,
+                   unloadDriver, runKernelTasks };

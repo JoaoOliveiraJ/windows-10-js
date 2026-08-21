@@ -71,18 +71,20 @@ win32_common:
     ret                         ; retorno em rax vale para o convidado
 
 ; ---------------------------------------------------------------------------
-; exec_msabi(addr, a1, a2): chama codigo nativo MS ABI (DriverEntry e
+; exec_msabi(addr, a1, a2, a3, a4): chama codigo nativo MS ABI (DriverEntry e
 ; dispatch routines de drivers .sys) a partir do kernel (SysV).
-;   SysV entrada: rdi = endereco, rsi = arg1, rdx = arg2
-;   MS ABI:       rcx = arg1,   rdx = arg2  (+32B de shadow space)
+;   SysV entrada: rdi = endereco, rsi = a1, rdx = a2, rcx = a3, r8 = a4
+;   MS ABI:       rcx = a1,       rdx = a2, r8  = a3, r9 = a4 (+32B shadow)
 ;   Retorno em rax e repassado ao chamador SysV.
 ; ---------------------------------------------------------------------------
 align 16
 exec_msabi:
     push rbp
     mov rbp, rsp
-    mov rcx, rsi                ; arg1
-    ; rdx ja e' arg2 (mesmo registrador nas duas ABIs)
+    mov r9, r8                  ; a4 -> arg4 (r9)
+    mov r8, rcx                 ; a3 -> arg3 (r8)
+    mov rcx, rsi                ; a1 -> arg1 (rcx)
+    ; rdx ja e' a2 (mesmo registrador nas duas ABIs)
     mov rax, rdi                ; endereco
     and rsp, -16
     sub rsp, 32                 ; shadow space da MS ABI

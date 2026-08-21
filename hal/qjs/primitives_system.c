@@ -104,20 +104,24 @@ static JSValue prim_execMachineCode(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-/* ---- os.execMsAbi(addr, a1, a2): codigo nativo na ABI MS (drivers .sys) ----
+/* ---- os.execMsAbi(addr, a1..a4): codigo nativo na ABI MS (.sys) ----
  * Retorna o rax do convidado. Implementado em hal/win32/win32thunk.asm. */
 
-extern uint64_t exec_msabi(uint64_t addr, uint64_t a1, uint64_t a2);
+extern uint64_t exec_msabi(uint64_t addr, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4);
 
 static JSValue prim_execMsAbi(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
-    double addr, a1, a2;
+    double addr, a1, a2, a3, a4;
     uint64_t r;
-    (void)this_val; (void)argc;
+    (void)this_val;
     JS_ToFloat64(ctx, &addr, argv[0]);
     JS_ToFloat64(ctx, &a1, argv[1]);
     JS_ToFloat64(ctx, &a2, argv[2]);
-    r = exec_msabi((uint64_t)addr, (uint64_t)a1, (uint64_t)a2);
+    JS_ToFloat64(ctx, &a3, argv[3]);
+    JS_ToFloat64(ctx, &a4, argv[4]);
+    r = exec_msabi((uint64_t)addr, (uint64_t)a1, (uint64_t)a2,
+                   (uint64_t)a3, (uint64_t)a4);
     return JS_NewFloat64(ctx, (double)r);
 }
 
@@ -127,6 +131,14 @@ static JSValue prim_getWin32ThunkTable(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewFloat64(ctx, (double)(uintptr_t)win32_stubs);
+}
+
+/* ---- os.getGuestArenaBase(): base da arena do heap de convidado ---- */
+
+static JSValue prim_getGuestArenaBase(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewFloat64(ctx, (double)host_guest_arena());
 }
 
 /* ---- os.halt() ---- */
@@ -145,8 +157,9 @@ const JSCFunctionListEntry jsos_system_funcs[] = {
     JS_CFUNC_DEF("readBundleBytes", 1, prim_readBundleBytes),
     JS_CFUNC_DEF("listBundleFiles", 0, prim_listBundleFiles),
     JS_CFUNC_DEF("execMachineCode", 1, prim_execMachineCode),
-    JS_CFUNC_DEF("execMsAbi", 3, prim_execMsAbi),
+    JS_CFUNC_DEF("execMsAbi", 5, prim_execMsAbi),
     JS_CFUNC_DEF("getWin32ThunkTable", 0, prim_getWin32ThunkTable),
+    JS_CFUNC_DEF("getGuestArenaBase", 0, prim_getGuestArenaBase),
     JS_CFUNC_DEF("halt", 0, prim_halt),
 };
-const int jsos_system_funcs_count = 9;
+const int jsos_system_funcs_count = 10;
