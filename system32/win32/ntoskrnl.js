@@ -165,6 +165,11 @@ const exportNames = [
     'KeInitializeSpinLock',
     'KeAcquireSpinLockRaiseToDpc',
     'KeReleaseSpinLock',
+    'RtlInitAnsiString',
+    'RtlAnsiStringToUnicodeString',
+    'RtlUnicodeStringToAnsiString',
+    'RtlFreeAnsiString',
+    'RtlFreeUnicodeString',
 ];
 
 const exportHandlers = [
@@ -342,6 +347,67 @@ const exportHandlers = [
     (pointer, oldIrql) => {
         os.writePhysical32(pointer, 0);
         currentIrql = oldIrql;
+        return 0;
+    },
+    // RtlInitAnsiString(outPtr, cstrPtr): aponta o buffer (sem alocar)
+    (outputPointer, cStringPointer) => {
+        const text = readGuestCString(cStringPointer);
+        os.writePhysical16(outputPointer, text.length);
+        os.writePhysical16(outputPointer + 2, text.length + 1);
+        os.writePhysical32(outputPointer + 4, 0);
+        os.writePhysical32(outputPointer + 8, cStringPointer >>> 0);
+        os.writePhysical32(outputPointer + 12, 0);
+        return 0;
+    },
+    // RtlAnsiStringToUnicodeString(uniPtr, ansiPtr, allocate)
+    (unicodePointer, ansiPointer, allocate) => {
+        const ansiBuffer = os.readPhysical32(ansiPointer + 8);
+        const text = readGuestCString(ansiBuffer);
+        const lengthBytes = text.length * 2;
+        let buffer = os.readPhysical32(unicodePointer + 8);
+        if (allocate || !buffer) buffer = guestAllocBytes(lengthBytes + 2);
+        for (let i = 0; i < text.length; i++)
+            os.writePhysical16(buffer + i * 2, text.charCodeAt(i));
+        os.writePhysical16(buffer + lengthBytes, 0);
+        os.writePhysical16(unicodePointer, lengthBytes);
+        os.writePhysical16(unicodePointer + 2, lengthBytes + 2);
+        os.writePhysical32(unicodePointer + 4, 0);
+        os.writePhysical32(unicodePointer + 8, buffer);
+        os.writePhysical32(unicodePointer + 12, 0);
+        return 0;
+    },
+    // RtlUnicodeStringToAnsiString(ansiPtr, uniPtr, allocate)
+    (ansiPointer, unicodePointer, allocate) => {
+        const text = readUnicodeString(unicodePointer);
+        let buffer = os.readPhysical32(ansiPointer + 8);
+        if (allocate || !buffer) buffer = guestAllocBytes(text.length + 1);
+        for (let i = 0; i < text.length; i++)
+            os.writePhysical8(buffer + i, text.charCodeAt(i) & 0xFF);
+        os.writePhysical8(buffer + text.length, 0);
+        os.writePhysical16(ansiPointer, text.length);
+        os.writePhysical16(ansiPointer + 2, text.length + 1);
+        os.writePhysical32(ansiPointer + 4, 0);
+        os.writePhysical32(ansiPointer + 8, buffer);
+        os.writePhysical32(ansiPointer + 12, 0);
+        return 0;
+    },
+    // RtlFreeAnsiString(ptr) / RtlFreeUnicodeString(ptr): libera o buffer
+    (pointer) => {
+        const buffer = os.readPhysical32(pointer + 8);
+        if (buffer) guestFreeBytes(buffer);
+        os.writePhysical16(pointer, 0);
+        os.writePhysical16(pointer + 2, 0);
+        os.writePhysical32(pointer + 8, 0);
+        os.writePhysical32(pointer + 12, 0);
+        return 0;
+    },
+    (pointer) => {   // RtlFreeUnicodeString: mesma coisa
+        const buffer = os.readPhysical32(pointer + 8);
+        if (buffer) guestFreeBytes(buffer);
+        os.writePhysical16(pointer, 0);
+        os.writePhysical16(pointer + 2, 0);
+        os.writePhysical32(pointer + 8, 0);
+        os.writePhysical32(pointer + 12, 0);
         return 0;
     },
 ];

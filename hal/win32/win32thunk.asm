@@ -16,7 +16,7 @@ extern js_win32_dispatch
 global win32_stubs
 global exec_msabi
 
-%define MAX_WIN32 64
+%define MAX_WIN32 96
 
 align 16
 win32_stubs:

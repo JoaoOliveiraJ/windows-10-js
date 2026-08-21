@@ -161,6 +161,9 @@ function run() {
     // grupo 9: IRQL + spinlock (KeRaiseIrql/KeAcquireSpinLockRaiseToDpc...)
     testNativeDriver('/irql.sys', '\\Device\\Irql', 'irql-ok');
 
+    // grupo 10: Rtl ANSI<->Unicode (conversao com alocacao real)
+    testNativeDriver('/rtlansi.sys', '\\Device\\RtlAnsi', 'rtl-ansi-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 
