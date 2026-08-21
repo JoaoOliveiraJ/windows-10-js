@@ -184,6 +184,35 @@ GUI, threads, DLLs) seria preciso implementar centenas de APIs e o formato de
 exceções SEH — é o escopo do ReactOS (décadas de trabalho). O caminho é
 expandir `win32.js` API a API.
 
+## Drivers `.sys` estilo Windows (WDM de brinquedo, real de verdade)
+
+O jsOS **carrega e executa drivers no formato `.sys` do Windows** (PE nativo,
+`DriverEntry`, dispatch de IRPs) — com o modelo de kernel em JavaScript:
+
+- `system32/win32/pe-loader.js` — o mesmo loader PE; resolve imports de
+  `ntoskrnl.exe` contra a tabela em `system32/win32/ntoskrnl.js` (ids 32-63 do
+  trampolim; o C roteia `id>=32` para `globalThis.Ntoskrnl.handle`).
+- `system32/win32/ntoskrnl.js` — os exports do kernel em JS: `DbgPrint`,
+  `IoCreateDevice`, `IoCreateSymbolicLink`, `IoDeleteDevice`, `IoAllocateIrp`,
+  `IoFreeIrp`, `IoCompleteRequest`, `RtlInitUnicodeString`,
+  `RtlCompare/Copy/EqualUnicodeString`, `KeQuerySystemTime`, `KeQueryTickCount`,
+  `MmAllocate/FreeNonCachedMemory`, `ExAllocatePoolWithTag`, `ExFreePool` —
+  com **alocador real de heap do convidado** (lista livre com split+coalesce;
+  free reusa endereços, verificado em teste).
+- `system32/ntos/io/io-manager.js` — despacha IRPs para drivers JS **ou
+  nativos** (serializa o IRP para a memória do convidado e chama a rotina de
+  dispatch do driver com `os.execMsAbi`).
+
+Drivers demo em `apps/drivers/*.c` (cada um vira `*.sys` no build, compilado
+com `zig cc` no Windows — a import library `ntoskrnl.lib` é gerada da própria
+tabela JS via `zig dlltool`, fonte única de verdade). Todos cobertos pelo
+autoteste: echo.sys, irplife.sys, rtlstr.sys, ketime.sys, mmmem.sys,
+expool.sys. No shell: `loaddriver /echo.sys`.
+
+**Limites honestos**: nossa ABI de structs é um subconjunto documentado estilo
+NT — drivers WDM de terceiros (com centenas de exports e semântica exata)
+continuam fora de alcance; o caminho é expandir a tabela export a export.
+
 ## E drivers .sys do Windows?
 
 **Não é viável** — drivers WDM dependem do ntoskrnl, HAL, I/O Manager, PnP,
