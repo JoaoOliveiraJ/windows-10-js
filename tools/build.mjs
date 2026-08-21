@@ -77,6 +77,9 @@ function genBundle() {
     /* .exe Windows compilado pelo build (ver secao 0) */
     const helloExe = path.join(buildDir, 'hello.exe');
     if (existsSync(helloExe)) entries.push({ name: 'apps/hello.exe', file: helloExe });
+    /* driver .sys compilado pelo build (ver secao 0b) */
+    const echoSys = path.join(buildDir, 'echo.sys');
+    if (existsSync(echoSys)) entries.push({ name: 'apps/echo.sys', file: echoSys });
     let out = '/* GERADO pelo build (tools/build.mjs) - nao editar */\n';
     out += '#include <stdint.h>\n';
     out += 'typedef struct { const char *name; const char *data; uint32_t size; } jsbundle_file_t;\n\n';
@@ -98,14 +101,33 @@ function genBundle() {
 mkdirSync(buildDir, { recursive: true });
 
 /* 0. demo Windows .exe (PE32+) compilado com zig cc */
-const helloC = path.join(root, 'apps', 'win', 'hello.c');
+const helloC = path.join(root, 'apps', 'win32-demo', 'hello.c');
 if (existsSync(helloC)) {
     run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-O2',
         '-Wl,-e,mainCRTStartup', '-Wl,--subsystem,console', '-Wl,--image-base,0x400000',
         helloC, '-lkernel32', '-o', path.join(buildDir, 'hello.exe')]);
 }
 
+/* 0b. driver demo .sys (PE nativo, imports de ntoskrnl.exe).
+ * zig dlltool gera a import library a partir do .def. */
+const echoDriverC = path.join(root, 'apps', 'drivers', 'echo.c');
+if (existsSync(echoDriverC)) {
+    const defFile = path.join(buildDir, 'ntoskrnl.def');
+    writeFileSync(defFile,
+        'LIBRARY ntoskrnl.exe\nEXPORTS\n' +
+        ['DbgPrint', 'IoCreateDevice', 'IoCreateSymbolicLink', 'IoDeleteDevice',
+         'RtlInitUnicodeString', 'IoCompleteRequest'].join('\n') + '\n');
+    run(zig, ['dlltool', '-d', defFile, '-l', path.join(buildDir, 'ntoskrnl.lib')]);
+    run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-O2',
+        '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,0x500000',
+        echoDriverC, path.join(buildDir, 'ntoskrnl.lib'),
+        '-o', path.join(buildDir, 'echo.sys')]);
+}
+
 const nFiles = genBundle();
+
+/* disco NTFS de teste (anexado como slave IDE no QEMU) */
+run('python', [path.join(root, 'tools', 'mkntfs.py'), path.join(buildDir, 'ntfs.img')]);
 
 const bootBin = path.join(buildDir, 'boot.bin');
 const stage2Bin = path.join(buildDir, 'stage2.bin');
@@ -121,13 +143,18 @@ if (stage2.length > STAGE2_MAX) { console.error('stage2.bin maior que a reserva 
 const thunkObj = path.join(buildDir, 'win32thunk.o');
 run(nasm, ['-f', 'elf64', path.join(root, 'hal', 'win32', 'win32thunk.asm'), '-o', thunkObj]);
 
+/* trampolins de IRQ (vetores -> memoria compartilhada, lida pelo JS) */
+const irqObj = path.join(buildDir, 'irqstubs.o');
+run(nasm, ['-f', 'elf64', path.join(root, 'hal', 'core', 'irqstubs.asm'), '-o', irqObj]);
+
 const sources = new Set([
     ...walk(path.join(root, 'hal')).filter(f => f.endsWith('.c')),
     path.join(buildDir, 'generated', 'jsbundle.c'),
     thunkObj,
+    irqObj,
 ]);
 
-const quickjsHost = path.join(root, 'hal', 'qjs', 'quickjs_host.c');
+const quickjsHost = path.join(root, 'hal', 'qjs', 'engine.c');
 const withQuickJS = existsSync(quickjsHost);
 if (withQuickJS) {
     const vq = path.join(root, 'vendor', 'quickjs');

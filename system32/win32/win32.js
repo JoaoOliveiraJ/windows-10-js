@@ -23,7 +23,7 @@ function lookup(dll, name) {
 
 function readGuest(addr, len) {
     let s = '';
-    for (let i = 0; i < len; i++) s += String.fromCharCode(os.peek8(addr + i));
+    for (let i = 0; i < len; i++) s += String.fromCharCode(os.readPhysical8(addr + i));
     return s;
 }
 
@@ -35,17 +35,17 @@ function handle(id, a1, a2, a3, a4) {
         const text = readGuest(a2, a3);
         lastWrite = text;
         VGA.write(text);
-        os.write(text);
-        if (a4) os.poke32(a4, a3);
+        os.serialWrite(text);
+        if (a4) os.writePhysical32(a4, a3);
         return 1;
     }
     case 2:  // ExitProcess(code) - ver README (demo usa 'ret')
-        os.print('[win32] ExitProcess(' + a1 + ')');
+        os.debugPrint('[win32] ExitProcess(' + a1 + ')');
         return 0;
     case 3:  // GetTickCount()
         return Date.now() & 0xFFFFFFFF;
     }
-    os.print('[win32] API desconhecida id=' + id);
+    os.debugPrint('[win32] API desconhecida id=' + id);
     return 0;
 }
 

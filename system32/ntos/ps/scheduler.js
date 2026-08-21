@@ -39,7 +39,7 @@ function tick() {
             if (p.gen.next().done) p.state = 'done';
             else p.state = 'ready';
         } catch (e) {
-            os.print('[sched] processo ' + p.pid + ' (' + p.name + ') morreu: ' + e.message);
+            os.debugPrint('[sched] processo ' + p.pid + ' (' + p.name + ') morreu: ' + e.message);
             p.state = 'done';
         }
     }

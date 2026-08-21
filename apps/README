@@ -1,3 +1,0 @@
-jsOS - kernel de brinquedo escrito 100% em JavaScript.
-Drivers (VGA, teclado), shell, syscalls e este FS moram em JS.
-Digite "help" para os comandos do shell.

@@ -23,13 +23,13 @@ void kernel_main(void) {
 
     js_host_init();
 
-    /* kernel JavaScript: system32/main.js do bundle embutido */
+    /* kernel JavaScript: system32/init/main.js do bundle embutido */
     {
         const char *code;
         size_t size;
-        if (host_read_file("system32/main.js", &code, &size) != 0)
-            host_panic("system32/main.js nao encontrado no bundle");
-        if (!js_host_run(code, "system32/main.js"))
+        if (host_read_file("system32/init/main.js", &code, &size) != 0)
+            host_panic("system32/init/main.js nao encontrado no bundle");
+        if (!js_host_run(code, "system32/init/main.js"))
             host_panic("excecao no kernel JS");
     }
 

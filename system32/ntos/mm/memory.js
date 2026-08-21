@@ -11,8 +11,8 @@ function fmt(bytes) {
 }
 
 function cmdMem() {
-    const h = os.heapInfo();
-    Console.print('RAM total : ' + fmt(os.ramSize()) + ' (via E820)');
+    const h = os.getHeapInfo();
+    Console.print('RAM total : ' + fmt(os.getRamSize()) + ' (via E820)');
     Console.print('heap      : ' + fmt(h.used) + ' usados / ' + fmt(h.total) + ' total');
     Console.print('livre     : ' + fmt(h.total - h.used));
 }

@@ -16,11 +16,13 @@ sistema operacional de verdade (tudo que você edita e evolui) é JavaScript:
 | Camada | Linguagem | O que faz |
 |---|---|---|
 | Boot (real mode → long mode) | Assembly | setor de boot, E820, A20, GDT, carga do kernel via ATA PIO, paginação, SSE |
-| Motor + primitivas | C | engine **QuickJS** + `os.*` (portas de I/O, peek/poke de memória física, heap, bundle de arquivos) |
-| **Sistema operacional** | **JavaScript** | drivers VGA/teclado, console, shell, syscalls, VFS, escalonador, memória |
+| Trampolins de hardware | Assembly | vetores de IRQ (irqstubs.asm), ABI MS→SysV (win32thunk.asm) |
+| Motor + primitivas | C | engine **QuickJS** + `os.*` de uma instrução (portas, memória física, lidt, msr, cpuid, heap, bundle) |
+| **Sistema operacional** | **JavaScript** | nanokernel (IRQ/IPC/serviços), Object Manager, I/O Manager (IRPs), drivers, VFS, NTFS, syscalls, escalonador, shell, loader PE, mini-kernel32 |
 
 É a mesma relação que o Node.js (C++) tem com o seu código JS — só que aqui o
-C++ não tem sistema operacional embaixo: é bare metal.
+C++ não tem sistema operacional embaixo: é bare metal. Detalhes em
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Estrutura
 
@@ -31,28 +33,37 @@ com `ntos/{ob,mm,ps,ex,fs,rtl,test}`, `drivers/`, `win32/`.
 ├── boot/                     # Assembly: boot.asm (setor 512B) + stage2.asm
 │                             #   (real→prot→long mode, E820, ATA PIO, paging)
 ├── hal/                      # HAL + engine host (camada C fixa, minima)
-│   ├── core/                 #   kernel_main.c, host.c/h, drivers.h, link.ld
+│   ├── core/                 #   kernel_main.c, host.c/h, drivers.h, link.ld,
+│   │                         #   irqstubs.asm (trampolins de IRQ)
 │   ├── mm/                   #   kmalloc.c (heap K&R; inicio 16MB)
 │   ├── rtc/                  #   rtc.c (relogio CMOS p/ Date do engine)
-│   ├── qjs/                  #   quickjs_host.c/h (contexto QuickJS + os.*)
+│   ├── qjs/                  #   engine.c + jsos.h + primitives_{ports,memory,
+│   │                         #   system,irq}.c (contexto QuickJS + os.*)
 │   ├── win32/                #   win32thunk.asm (ABI MS x64 → SysV → JS)
 │   └── rtl/                  #   libc shim minimo (exigido pelo engine)
 ├── system32/                 # ★ O SISTEMA — 100% JavaScript ★
 │   ├── main.js               #   entry: raiz de composicao (monta o SO)
-│   ├── ntos/                 #   nucleo (≈ ntoskrnl.exe)
+│   ├── nano/                 #   NANOKERNEL: o mínimo
+│   │   ├── irq.js            #     interrupções (IDT construída em JS!)
+│   │   ├── ipc.js            #     canais de mensagens entre serviços
+│   │   └── kernel.js         #     registro/chamada de serviços
+│   ├── ntos/                 #   subsistemas NT (≈ ntoskrnl.exe)
 │   │   ├── ob/objmgr.js      #     Object Manager (namespace, handles)
-│   │   ├── mm/memory.js      #     Memory Manager (visao heap/RAM)
+│   │   ├── io/iomgr.js       #     I/O Manager (DriverObject + IRPs)
+│   │   ├── mm/memory.js      #     Memory Manager (visão heap/RAM)
 │   │   ├── ps/scheduler.js   #     Process Manager (escalonador)
 │   │   ├── ex/syscalls.js    #     Executive: tabela de syscalls
-│   │   ├── fs/vfs.js         #     VFS (FS em memoria)
+│   │   ├── fs/vfs.js         #     VFS (FS em memória)
+│   │   ├── fs/ntfs.js        #     NTFS real (leitura: MFT, runlists)
 │   │   ├── rtl/module.js     #     runtime: mini CommonJS require()
 │   │   └── test/selftest.js  #     autoteste (marca SELFTEST_OK)
-│   ├── drivers/              #   drivers (≈ System32\drivers)
-│   │   ├── video/vga.js      #     VGA 80x25 (poke16 em 0xB8000)
-│   │   ├── input/keyboard.js #     teclado PS/2 por polling (inb 0x60)
-│   │   └── console/console.js#     console (VGA + serial)
+│   ├── drivers/              #   drivers JS com DriverEntry (estilo NT)
+│   │   ├── video/vga.js      #     VGA 80x25 (writePhysical16 em 0xB8000)
+│   │   ├── input/keyboard.js #     teclado PS/2 (IRQ1/polling)
+│   │   ├── console/console.js#     console (VGA + serial)
+│   │   └── storage/atapio.js #     disco ATA PIO (portas 0x1F0-0x1F7)
 │   ├── win32/                #   subsistema Win32
-│   │   ├── pe.js             #     loader PE32+ (parse, secoes, IAT)
+│   │   ├── pe.js             #     loader PE32+ (parse, seções, IAT)
 │   │   └── win32.js          #     mini-kernel32 (GetStdHandle, WriteFile...)
 │   └── shell/shell.js        #   o "cmd.exe" do jsOS
 ├── apps/                     # programas do VFS (≈ Program Files)
@@ -66,17 +77,22 @@ com `ntos/{ob,mm,ps,ex,fs,rtl,test}`, `drivers/`, `win32/`.
 
 ## Primitivas `os.*` (a única porta do JS para o hardware)
 
+Nomes sem abreviação, divididos por área no C (`hal/qjs/primitives_*.c`):
+
 | Função | Descrição |
 |---|---|
-| `os.print(...)` | saída na serial COM1 (debug, com newline) |
-| `os.write(s)` | serial crua, sem newline |
-| `os.outb(port, v)` / `os.inb(port)` | I/O de porta (drivers em JS usam isso) |
-| `os.poke8/16/32(addr, v)` / `os.peek8/16/32(addr)` | memória física (identity-mapped) |
-| `os.readFile(nome)` / `os.readFileBytes(nome)` | arquivo do bundle (texto / ArrayBuffer) |
-| `os.listBundle()` | nomes dos arquivos embutidos |
-| `os.execAt(addr)` | chama código nativo x86-64 (entry de .exe) |
-| `os.win32ThunkBase()` | base da tabela de trampolins Win32 |
-| `os.ramSize()` / `os.heapInfo()` | RAM (E820) / uso do heap |
+| `os.debugPrint(...)` | serial COM1 com newline (debug do kernel) |
+| `os.serialWrite(s)` | serial crua, sem newline |
+| `os.writePort8(p, v)` / `os.readPort8(p)` / `os.readPort16(p)` | I/O de porta |
+| `os.writePhysical8/16/32(addr, v)` / `os.readPhysical8/16/32(addr)` | memória física |
+| `os.readBundleText(nome)` / `os.readBundleBytes(nome)` | arquivo do bundle (texto / ArrayBuffer) |
+| `os.listBundleFiles()` | nomes dos arquivos embutidos |
+| `os.execMachineCode(addr)` | chama código nativo x86-64 (entry de PE) |
+| `os.getWin32ThunkTable()` | base da tabela de trampolins Win32 |
+| `os.loadIdt(addr, size)` | carrega a IDT (lidt + sti) |
+| `os.getIrqStubTable()` | base dos trampolins de IRQ (asm fixo) |
+| `os.readMsr(n)` / `os.writeMsr(n, v)` / `os.cpuid(leaf)` | MSRs e CPUID |
+| `os.getRamSize()` / `os.getHeapInfo()` | RAM (E820) / uso do heap |
 | `os.halt()` | desliga |
 
 ## Arquitetura estilo Windows NT (em construção)
@@ -112,9 +128,22 @@ Syscalls novas: `open`=11, `close`=12. No shell, `objects` mostra a árvore e
 caminhos `C:\arquivo` funcionam (o shell traduz para o VFS; o namespace NT
 resolve `\DosDevices\C:\...` seguindo o link).
 
-Roadmap NT: Fase A ✅ Object Manager → Fase B: I/O Manager (DriverObject /
-DeviceObject + IRPs descendo pela pilha) → Fase C: processos como objetos com
-handles → Fase D: Registry-like em JS → Fase E: camada user-mode (ntdll-like).
+Roadmap NT: Fase A ✅ Object Manager → Fase B ✅ **I/O Manager**
+(`ntos/io/iomgr.js`: DriverObject/DeviceObject + IRPs; drivers registram com
+`DriverEntry` na inicialização) → Fase C: processos como objetos com handles →
+Fase D: Registry-like em JS → Fase E: camada user-mode (ntdll-like).
+
+## NTFS (leitura real)
+
+`ntos/fs/ntfs.js` implementa NTFS de verdade (somente leitura): boot sector,
+MFT com fixup (USA), atributos residentes e não-residentes (runlists com
+deltas sinalizados), `$FILE_NAME` e diretórios via `$INDEX_ROOT`. O driver de
+disco é `drivers/storage/atapio.js` (ATA PIO por portas, 100% JS). No boot, o
+disco slave IDE é montado em `D:` (via `\DosDevices\D:` → `\NTFS`).
+`tools/mkntfs.py` gera a imagem de teste (`build/ntfs.img`, com HELLO.TXT).
+
+Escrita/journal/ACLs ficam para depois — NTFS completo é um projeto do tamanho
+do ntfs-3g; aqui a fundação é real e testada.
 
 ## Sistema de módulos em JS
 
@@ -142,7 +171,7 @@ loader e a API em JavaScript:
   no ImageBase preferido (`0x400000`) e resolve a IAT (imports por nome de
   `KERNEL32.dll`) apontando para os trampolins de `hal/win32/win32thunk.asm`.
 - `hal/win32/win32thunk.asm` — converte a ABI Microsoft x64 → SysV e despacha.
-- `hal/qjs/quickjs_host.c: js_win32_dispatch` — chama o handler JS.
+- `hal/qjs/engine.c: js_win32_dispatch` — chama o handler JS.
 - `system32/win32/win32.js` — as APIs Windows em si (hoje: `GetStdHandle`,
   `WriteFile`, `ExitProcess`, `GetTickCount`), implementadas sobre syscalls do jsOS.
 

@@ -4,5 +4,6 @@ rem Boot BIOS (SeaBIOS) a partir de build\os.img; serial vai p/ build\serial.log
 "C:\Program Files\qemu\qemu-system-x86_64.exe" ^
   -m 128 -accel whpx ^
   -drive format=raw,file="%~dp0..\build\os.img" ^
+  -drive format=raw,if=ide,index=1,media=disk,file="%~dp0..\build\ntfs.img" ^
   -serial file:"%~dp0..\build\serial.log" ^
   -no-reboot

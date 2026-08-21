@@ -21,6 +21,7 @@ function tryBoot(accelArgs) {
             ...accelArgs,
             '-m', '128',
             '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,
+            '-drive', `format=raw,if=ide,index=1,media=disk,file=${path.join(root, 'build', 'ntfs.img')}`,
             '-display', 'none',
             '-serial', 'stdio',
             '-no-reboot',
@@ -49,12 +50,8 @@ function tryBoot(accelArgs) {
 }
 
 let res = await tryBoot(['-accel', 'whpx']);
-// fallback TCG so quando a aceleracao realmente falha ao INICIAR;
-// warnings do WHPX (ex: performance monitoring) sao inofensivos
-if (!res.ok && /failed to (initialize|create)|not supported|no accelerator/i.test(res.out)) {
-    console.log('WHPX indisponivel, tentando TCG (sem aceleracao)...');
-    res = await tryBoot([]);
-}
+// sempre WHPX: sem fallback TCG (interrupcoes funcionam so em TCG/hardware;
+// sob WHPX o kernel detecta a plataforma e roda em modo polling)
 
 if (res.ok) {
     console.log(`PASS: marcador "${marker}" recebido no serial.`);

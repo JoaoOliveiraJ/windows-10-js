@@ -4,13 +4,13 @@
 // ===========================================================================
 
 const Console = require('drivers/console/console');
-const VFS = require('ntos/fs/vfs');
-const Keyboard = require('drivers/input/keyboard');
+const MemoryFileSystem = require('ntos/fs/memory-file-system');
+const MessageChannels = require('nano/message-channels');
 const Scheduler = require('ntos/ps/scheduler');
 const Memory = require('ntos/mm/memory');
-const SYS = require('ntos/ex/syscalls');
-const ObjMgr = require('ntos/ob/objmgr');
-const PE = require('win32/pe');
+const SystemCall = require('ntos/ex/syscalls');
+const ObjectManager = require('ntos/ob/object-manager');
+const PeLoader = require('win32/pe-loader');
 
 const HELP = [
     'help              esta ajuda',
@@ -18,12 +18,13 @@ const HELP = [
     'clear             limpa a tela',
     'echo <txt>        imprime texto',
     'mem               uso do heap/RAM',
-    'ls                lista arquivos do VFS',
+    'ls                lista arquivos do MemoryFileSystem',
     'cat <arq>         mostra conteudo',
     'write <arq> <txt> grava arquivo',
     'rm <arq>          remove arquivo',
-    'run <arq.js>      executa programa JS do VFS',
+    'run <arq.js>      executa programa JS do MemoryFileSystem',
     'exec <arq.exe>    executa .exe Windows (PE32+) nativo',
+    'loaddriver <a.sys> carrega driver .sys nativo (estilo WDM)',
     'objects           namespace do Object Manager (estilo NT)',
     'ps                lista processos',
     'spawn <arq.js>    cria processo (arquivo retorna function*)',
@@ -48,15 +49,15 @@ function cmdEcho(args)  { Console.print(args.join(' ')); }
 function cmdMem()       { Memory.cmdMem(); }
 
 function cmdLs() {
-    const list = VFS.list();
+    const list = MemoryFileSystem.list();
     if (list.length === 0) { Console.print('(vazio)'); return; }
     Console.print(' Volume em C: montado em \\FS');
-    list.forEach(f => Console.print('  C:' + f.replace(/\//g, '\\') + '  (' + VFS.size(f) + ' bytes)'));
+    list.forEach(f => Console.print('  C:' + f.replace(/\//g, '\\') + '  (' + MemoryFileSystem.size(f) + ' bytes)'));
 }
 
 function cmdCat(args) {
     const p = normPath(args[0]);
-    const d = VFS.read(p);
+    const d = MemoryFileSystem.read(p);
     if (d === null) Console.print('arquivo nao encontrado: ' + args[0]);
     else if (d instanceof ArrayBuffer) Console.print('<arquivo binario, ' + d.byteLength + ' bytes>');
     else Console.print(d);
@@ -64,20 +65,20 @@ function cmdCat(args) {
 
 function cmdWrite(args) {
     if (args.length < 2) { Console.print('uso: write <arq> <texto>'); return; }
-    VFS.write(normPath(args[0]), args.slice(1).join(' '));
+    MemoryFileSystem.write(normPath(args[0]), args.slice(1).join(' '));
     Console.print('gravado: ' + args[0]);
 }
 
 function cmdRm(args) {
-    Console.print(VFS.remove(normPath(args[0])) ? 'removido' : 'nao encontrado');
+    Console.print(MemoryFileSystem.remove(normPath(args[0])) ? 'removido' : 'nao encontrado');
 }
 
 function cmdRun(args) {
-    const src = VFS.read(normPath(args[0]));
+    const src = MemoryFileSystem.read(normPath(args[0]));
     if (src === null) { Console.print('arquivo nao encontrado: ' + args[0]); return; }
     try {
-        const prog = new Function('SYS', src);
-        const ret = prog(SYS);
+        const prog = new Function('SystemCall', src);
+        const ret = prog(SystemCall);
         if (ret !== undefined) Console.print('= ' + ret);
     } catch (e) {
         Console.print('erro no programa: ' + e.message);
@@ -85,15 +86,15 @@ function cmdRun(args) {
 }
 
 function cmdExec(args) {
-    // executa um .exe Windows (PE32+) nativo, via PE loader + mini-kernel32
-    const buf = VFS.readBytes(normPath(args[0]));
-    if (!buf) { Console.print('nao e PE/binario ou nao existe: ' + args[0]); return; }
+    // executa um .exe Windows (PE32+) nativo, via PeLoader loader + mini-kernel32
+    const buf = MemoryFileSystem.readBytes(normPath(args[0]));
+    if (!buf) { Console.print('nao e PeLoader/binario ou nao existe: ' + args[0]); return; }
     try {
-        const entry = PE.load(buf);
-        os.execAt(entry);
+        const entry = PeLoader.load(buf);
+        os.execMachineCode(entry);
         Console.print('[pe] programa encerrado, de volta ao shell');
     } catch (e) {
-        Console.print('erro no loader PE: ' + e.message);
+        Console.print('erro no loader PeLoader: ' + e.message);
     }
 }
 
@@ -105,12 +106,12 @@ function cmdPs() {
 }
 
 function cmdSpawn(args) {
-    const src = VFS.read(args[0]);
+    const src = MemoryFileSystem.read(args[0]);
     if (src === null) { Console.print('arquivo nao encontrado: ' + args[0]); return; }
     try {
-        // convencao: o arquivo retorna uma funcao geradora function*(SYS)
+        // convencao: o arquivo retorna uma funcao geradora function*(SystemCall)
         const makeProc = new Function(src)();
-        const pid = Scheduler.spawn(args[0], makeProc, SYS);
+        const pid = Scheduler.spawn(args[0], makeProc, SystemCall);
         Console.print('processo ' + pid + ' criado (' + args[0] + ')');
     } catch (e) {
         Console.print('erro ao criar processo: ' + e.message);
@@ -123,12 +124,21 @@ function cmdKill(args) {
 }
 
 function cmdSelftest() {
-    require('ntos/test/selftest').run();
+    require('ntos/test/self-test').run();
     Console.print('selftest passou');
 }
 
+function cmdLoadDriver(args) {
+    try {
+        require('win32/ntoskrnl').loadDriver(normPath(args[0]));
+        Console.print('driver carregado, DriverEntry OK: ' + args[0]);
+    } catch (e) {
+        Console.print('erro ao carregar driver: ' + e.message);
+    }
+}
+
 function cmdObjects() {
-    ObjMgr.dump().forEach(l => Console.print(l));
+    ObjectManager.dump().forEach(l => Console.print(l));
 }
 
 function cmdHalt() { Console.print('desligando...'); os.halt(); }
@@ -137,6 +147,7 @@ const commands = {
     help: cmdHelp, version: cmdVersion, clear: cmdClear, echo: cmdEcho,
     mem: cmdMem, ls: cmdLs, cat: cmdCat, write: cmdWrite, rm: cmdRm,
     run: cmdRun, ps: cmdPs, spawn: cmdSpawn, kill: cmdKill, exec: cmdExec,
+    loaddriver: cmdLoadDriver,
     objects: cmdObjects, selftest: cmdSelftest, halt: cmdHalt,
 };
 
@@ -148,14 +159,14 @@ function exec(line) {
     else Console.print('comando desconhecido: ' + parts[0] + " (tente 'help')");
 }
 
-// processo gerador: yield quando nao ha tecla -> cede a CPU
+// processo gerador: yield quando o canal 'kbd' (IPC) nao tem tecla
 function* main() {
     Console.print('');
     Console.print("jsOS shell - digite 'help'");
     let line = '';
     Console.write('jsOS> ');
     for (;;) {
-        const k = Keyboard.pollKey();
+        const k = MessageChannels.receive('kbd');
         if (k === null) { yield; continue; }
         if (k === '\n') {
             Console.write('\n');
