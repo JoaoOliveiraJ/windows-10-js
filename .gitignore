@@ -1,0 +1,4 @@
+# ferramenta baixada
+tools/zig/
+# tudo que e gerado pelo build (kernel.elf, os.img, hello.exe, jsbundle.c...)
+build/
