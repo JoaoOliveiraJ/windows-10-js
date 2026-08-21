@@ -83,6 +83,8 @@ const exportNames = [
     'IoDeleteDevice',
     'RtlInitUnicodeString',
     'IoCompleteRequest',
+    'IoAllocateIrp',
+    'IoFreeIrp',
 ];
 
 const exportHandlers = [
@@ -126,6 +128,10 @@ const exportHandlers = [
         os.writePhysical32(ioRequestPointer + 4, 0);   // status = SUCCESS
         return 0;
     },
+    // IoAllocateIrp(stackSize, chargeQuota) -> IRP zerado (pagina do convidado)
+    (_stackSize, _chargeQuota) => guestAllocPage(),
+    // IoFreeIrp(ioRequestPointer) -> heap bump: no-op por enquanto
+    (_ioRequestPointer) => 0,
 ];
 
 function lookup(dllName, functionName) {

@@ -118,6 +118,12 @@ function run() {
     const readRequest = IoManager.read('\\Device\\Echo');
     assert(readRequest.result === 'eco-nativo', 'driver nativo devolveu o eco');
 
+    // grupo 2: ciclo de vida de IRP (IoAllocateIrp/IoCompleteRequest/IoFreeIrp)
+    Ntoskrnl.loadDriver('/irplife.sys');
+    assert(ObjectManager.lookup('\\Device\\IrpLife'), 'irplife criou device');
+    const lifeRead = IoManager.read('\\Device\\IrpLife');
+    assert(lifeRead.result === 'irp-life-ok', 'irplife read nativo');
+
     os.debugPrint('SELFTEST_OK');
 }
 

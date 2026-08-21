@@ -77,9 +77,8 @@ function genBundle() {
     /* .exe Windows compilado pelo build (ver secao 0) */
     const helloExe = path.join(buildDir, 'hello.exe');
     if (existsSync(helloExe)) entries.push({ name: 'apps/hello.exe', file: helloExe });
-    /* driver .sys compilado pelo build (ver secao 0b) */
-    const echoSys = path.join(buildDir, 'echo.sys');
-    if (existsSync(echoSys)) entries.push({ name: 'apps/echo.sys', file: echoSys });
+    /* drivers .sys compilados pelo build (ver secao 0b) */
+    for (const driver of builtDrivers) entries.push(driver);
     let out = '/* GERADO pelo build (tools/build.mjs) - nao editar */\n';
     out += '#include <stdint.h>\n';
     out += 'typedef struct { const char *name; const char *data; uint32_t size; } jsbundle_file_t;\n\n';
@@ -108,21 +107,28 @@ if (existsSync(helloC)) {
         helloC, '-lkernel32', '-o', path.join(buildDir, 'hello.exe')]);
 }
 
-/* 0b. driver demo .sys (PE nativo, imports de ntoskrnl.exe).
- * zig dlltool gera a import library a partir do .def. */
-const echoDriverC = path.join(root, 'apps', 'drivers', 'echo.c');
-if (existsSync(echoDriverC)) {
-    const defFile = path.join(buildDir, 'ntoskrnl.def');
-    writeFileSync(defFile,
-        'LIBRARY ntoskrnl.exe\nEXPORTS\n' +
-        ['DbgPrint', 'IoCreateDevice', 'IoCreateSymbolicLink', 'IoDeleteDevice',
-         'RtlInitUnicodeString', 'IoCompleteRequest'].join('\n') + '\n');
-    run(zig, ['dlltool', '-d', defFile, '-l', path.join(buildDir, 'ntoskrnl.lib')]);
+/* 0b. drivers .sys: a tabela de exports vem de system32/win32/ntoskrnl.js
+ * (fonte unica de verdade - a ORDEM la define os ids). zig dlltool gera a
+ * import library; cada apps/drivers/*.c vira um .sys compilado. */
+const ntoskrnlSource = readFileSync(path.join(root, 'system32', 'win32', 'ntoskrnl.js'), 'utf8');
+const exportNamesMatch = ntoskrnlSource.match(/const exportNames = \[([\s\S]*?)\]/);
+const ntoskrnlExports = [...exportNamesMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+const defFile = path.join(buildDir, 'ntoskrnl.def');
+writeFileSync(defFile, 'LIBRARY ntoskrnl.exe\nEXPORTS\n' + ntoskrnlExports.join('\n') + '\n');
+run(zig, ['dlltool', '-d', defFile, '-l', path.join(buildDir, 'ntoskrnl.lib')]);
+
+const builtDrivers = [];
+const driverSources = walk(path.join(root, 'apps', 'drivers')).filter(f => f.endsWith('.c'));
+driverSources.forEach((driverSource, index) => {
+    const driverName = path.basename(driverSource, '.c');
+    // cada driver num ImageBase proprio (sem relocs ainda): 0x500000 + 1MB cada
+    const imageBase = '0x' + (0x500000 + index * 0x100000).toString(16);
+    const sysFile = path.join(buildDir, driverName + '.sys');
     run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-O2',
-        '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,0x500000',
-        echoDriverC, path.join(buildDir, 'ntoskrnl.lib'),
-        '-o', path.join(buildDir, 'echo.sys')]);
-}
+        '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,' + imageBase,
+        driverSource, path.join(buildDir, 'ntoskrnl.lib'), '-o', sysFile]);
+    builtDrivers.push({ name: 'apps/' + driverName + '.sys', file: sysFile });
+});
 
 const nFiles = genBundle();
 
