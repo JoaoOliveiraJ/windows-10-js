@@ -120,25 +120,6 @@ function readGuestWideString(address) {
     return text;
 }
 
-function writeGuestBytes(address, bytes) {
-    for (let i = 0; i < bytes.length; i++) os.writePhysical8(address + i, bytes[i]);
-}
-
-function writeUnicodeString(outputPointer, text) {
-    const bytes = [];
-    for (let i = 0; i < text.length; i++) {
-        bytes.push(text.charCodeAt(i) & 0xFF, (text.charCodeAt(i) >> 8) & 0xFF);
-    }
-    bytes.push(0, 0);
-    const bufferPage = guestAllocPage();
-    writeGuestBytes(bufferPage, bytes);
-    os.writePhysical16(outputPointer, text.length * 2);
-    os.writePhysical16(outputPointer + 2, text.length * 2 + 2);
-    os.writePhysical32(outputPointer + 4, 0);
-    os.writePhysical32(outputPointer + 8, bufferPage);
-    os.writePhysical32(outputPointer + 12, 0);
-}
-
 function readUnicodeString(pointer) {
     const charCount = os.readPhysical16(pointer) / 2;
     const buffer = os.readPhysical32(pointer + 8);
@@ -168,6 +149,7 @@ const exportNames = [
     'MmFreeNonCachedMemory',
     'ExAllocatePoolWithTag',
     'ExFreePool',
+    'IoDeleteSymbolicLink',
 ];
 
 const exportHandlers = [
@@ -213,8 +195,15 @@ const exportHandlers = [
         return 0;
     },
     // RtlInitUnicodeString(outputPointer, wideStringPointer)
+    // semantica real: so aponta o buffer (sem alocar nada)
     (outputPointer, wideStringPointer) => {
-        writeUnicodeString(outputPointer, readGuestWideString(wideStringPointer));
+        const text = readGuestWideString(wideStringPointer);
+        const lengthBytes = text.length * 2;
+        os.writePhysical16(outputPointer, lengthBytes);
+        os.writePhysical16(outputPointer + 2, lengthBytes + 2);
+        os.writePhysical32(outputPointer + 4, 0);
+        os.writePhysical32(outputPointer + 8, wideStringPointer >>> 0);
+        os.writePhysical32(outputPointer + 12, 0);
         return 0;
     },
     // IoCompleteRequest(ioRequestPointer, priorityBoost)
@@ -233,8 +222,22 @@ const exportHandlers = [
         return a < b ? -1 : a > b ? 1 : 0;
     },
     // RtlCopyUnicodeString(destPtr, srcPtr)
+    // semantica real: copia os chars p/ o buffer do dest (ate MaximumLength)
     (destPointer, srcPointer) => {
-        writeUnicodeString(destPointer, readUnicodeString(srcPointer));
+        const srcCharCount = os.readPhysical16(srcPointer) / 2;
+        const srcBuffer = os.readPhysical32(srcPointer + 8);
+        const maxChars = os.readPhysical16(destPointer + 2) / 2;
+        let destBuffer = os.readPhysical32(destPointer + 8);
+        const copyChars = Math.min(srcCharCount, maxChars);
+        if (!destBuffer && maxChars > 0) {
+            destBuffer = guestAllocBytes(maxChars * 2);
+            os.writePhysical32(destPointer + 8, destBuffer);
+            os.writePhysical32(destPointer + 12, 0);
+        }
+        if (destBuffer)
+            for (let i = 0; i < copyChars; i++)
+                os.writePhysical16(destBuffer + i * 2, os.readPhysical16(srcBuffer + i * 2));
+        os.writePhysical16(destPointer, copyChars * 2);
         return 0;
     },
     // RtlEqualUnicodeString(ptrA, ptrB, caseInsensitive) -> 1/0
@@ -265,6 +268,11 @@ const exportHandlers = [
     (_poolType, size, _tag) => guestAllocBytes(size),
     // ExFreePool(pointer)
     (pointer) => { guestFreeBytes(pointer); return 0; },
+    // IoDeleteSymbolicLink(linkUnicodePtr): remove o link do namespace
+    (linkPointer) => {
+        const link = readUnicodeString(linkPointer);
+        return ObjectManager.unlink(link) ? 0 : 0xC0000009; // STATUS_NOT_FOUND
+    },
 ];
 
 function lookup(dllName, functionName) {
@@ -294,6 +302,7 @@ function beginDriver(driverName) {
         name: driverName,
         native: true,
         dispatchTablePointer: dispatchTablePage,
+        driverObjectPage: driverObjectPage,
         devices: [],
     });
     currentDriver = { name: driverName, node, driverObjectPage, dispatchTablePage };
@@ -301,6 +310,24 @@ function beginDriver(driverName) {
 }
 
 function endDriver() { currentDriver = null; }
+
+// descarrega um driver nativo DE VERDADE: chama DriverUnload (se o driver
+// registrou uma, em DRIVER_OBJECT+8), remove devices + driver do namespace
+// e libera as paginas do driver object
+function unloadDriver(driverName) {
+    const node = ObjectManager.lookup('\\Driver\\' + driverName);
+    if (!node || !node.data.native) return false;
+    const driverObjectPage = node.data.driverObjectPage;
+    const unloadRoutine = os.readPhysical32(driverObjectPage + 8) +
+                          os.readPhysical32(driverObjectPage + 12) * 0x100000000;
+    if (unloadRoutine) os.execMsAbi(unloadRoutine, driverObjectPage, 0);
+    for (const device of [...node.data.devices])
+        ObjectManager.unlink('\\Device\\' + device.name);
+    ObjectManager.unlink('\\Driver\\' + driverName);
+    guestFreeBytes(driverObjectPage);
+    guestFreeBytes(node.data.dispatchTablePointer);
+    return true;
+}
 
 // carrega um .sys do VFS: PE loader + DriverEntry nativo
 function loadDriver(filePath) {
@@ -320,4 +347,4 @@ function loadDriver(filePath) {
 // o C (js_win32_dispatch) procura globalThis.Ntoskrnl.handle
 globalThis.Ntoskrnl = { handle };
 
-module.exports = { lookup, beginDriver, endDriver, exportNames, loadDriver };
+module.exports = { lookup, beginDriver, endDriver, exportNames, loadDriver, unloadDriver };

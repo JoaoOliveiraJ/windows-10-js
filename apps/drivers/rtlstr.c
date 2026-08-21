@@ -36,6 +36,7 @@ __declspec(dllimport) ULONG RtlEqualUnicodeString(UNICODE_STRING *a, UNICODE_STR
                                                   ULONG caseInsensitive);
 
 static int allPassed = 0;
+static wchar_t copyStorage[64];   /* buffer real p/ RtlCopyUnicodeString */
 
 static NTSTATUS stringRead(ULONG64 devicePtr, ULONG64 irpPtr) {
     JSOS_IRP *irp = (JSOS_IRP *)(ULONG64)irpPtr;
@@ -63,6 +64,9 @@ NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
 
     RtlInitUnicodeString(&first, L"Windows");
     RtlInitUnicodeString(&second, L"windows");
+    RtlInitUnicodeString(&copy, L"");
+    copy.MaximumLength = sizeof(copyStorage);
+    copy.Buffer = (ULONG64)(ULONG64)copyStorage;
 
     allPassed =
         RtlEqualUnicodeString(&first, &second, 1) &&          /* case-insensitive igual */

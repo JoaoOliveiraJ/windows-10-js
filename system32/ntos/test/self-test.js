@@ -143,6 +143,18 @@ function run() {
     assert(!ObjectManager.lookup('\\Device\\ExPoolTrash'),
            'IoDeleteDevice removeu o device do namespace');
 
+    // grupo 7: ciclo de vida — unload real (DriverUnload + IoDeleteSymbolicLink)
+    Ntoskrnl.loadDriver('/lifecycle.sys');
+    assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');
+    assert(ObjectManager.lookup('\\DosDevices\\LifeCycle'), 'lifecycle link criado');
+    assert(Ntoskrnl.unloadDriver('lifecycle'), 'unloadDriver');
+    assert(!ObjectManager.lookup('\\Device\\LifeCycle'),
+           'device removido no unload');
+    assert(!ObjectManager.lookup('\\Driver\\lifecycle'),
+           'driver removido do namespace');
+    assert(!ObjectManager.lookup('\\DosDevices\\LifeCycle'),
+           'DriverUnload rodou e removeu o link');
+
     os.debugPrint('SELFTEST_OK');
 }
 
