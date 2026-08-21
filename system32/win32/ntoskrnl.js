@@ -85,6 +85,9 @@ const exportNames = [
     'IoCompleteRequest',
     'IoAllocateIrp',
     'IoFreeIrp',
+    'RtlCompareUnicodeString',
+    'RtlCopyUnicodeString',
+    'RtlEqualUnicodeString',
 ];
 
 const exportHandlers = [
@@ -132,6 +135,23 @@ const exportHandlers = [
     (_stackSize, _chargeQuota) => guestAllocPage(),
     // IoFreeIrp(ioRequestPointer) -> heap bump: no-op por enquanto
     (_ioRequestPointer) => 0,
+    // RtlCompareUnicodeString(ptrA, ptrB, caseInsensitive) -> <0/0/>0
+    (pointerA, pointerB, caseInsensitive) => {
+        let a = readUnicodeString(pointerA), b = readUnicodeString(pointerB);
+        if (caseInsensitive) { a = a.toLowerCase(); b = b.toLowerCase(); }
+        return a < b ? -1 : a > b ? 1 : 0;
+    },
+    // RtlCopyUnicodeString(destPtr, srcPtr)
+    (destPointer, srcPointer) => {
+        writeUnicodeString(destPointer, readUnicodeString(srcPointer));
+        return 0;
+    },
+    // RtlEqualUnicodeString(ptrA, ptrB, caseInsensitive) -> 1/0
+    (pointerA, pointerB, caseInsensitive) => {
+        let a = readUnicodeString(pointerA), b = readUnicodeString(pointerB);
+        if (caseInsensitive) { a = a.toLowerCase(); b = b.toLowerCase(); }
+        return a === b ? 1 : 0;
+    },
 ];
 
 function lookup(dllName, functionName) {

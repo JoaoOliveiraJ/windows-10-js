@@ -119,10 +119,18 @@ function run() {
     assert(readRequest.result === 'eco-nativo', 'driver nativo devolveu o eco');
 
     // grupo 2: ciclo de vida de IRP (IoAllocateIrp/IoCompleteRequest/IoFreeIrp)
-    Ntoskrnl.loadDriver('/irplife.sys');
-    assert(ObjectManager.lookup('\\Device\\IrpLife'), 'irplife criou device');
-    const lifeRead = IoManager.read('\\Device\\IrpLife');
-    assert(lifeRead.result === 'irp-life-ok', 'irplife read nativo');
+    // helper: carrega um driver nativo, le do device, confere a resposta
+    function testNativeDriver(file, device, expected) {
+        Ntoskrnl.loadDriver(file);
+        assert(ObjectManager.lookup(device), 'device de ' + file);
+        const response = IoManager.read(device);
+        assert(response.result === expected,
+               'read de ' + file + ' -> "' + response.result + '"');
+    }
+    testNativeDriver('/irplife.sys', '\\Device\\IrpLife', 'irp-life-ok');
+
+    // grupo 3: Rtl unicode strings (Compare/Copy/Equal)
+    testNativeDriver('/rtlstr.sys', '\\Device\\RtlStr', 'rtl-str-ok');
 
     os.debugPrint('SELFTEST_OK');
 }
