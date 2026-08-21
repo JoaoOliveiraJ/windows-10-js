@@ -30,6 +30,9 @@ function guestAllocPage() {
 // driver sendo inicializado no momento (entre beginDriver/endDriver)
 let currentDriver = null;
 
+// epoch do boot em ms (para KeQueryTickCount)
+const bootEpochMs = Date.now();
+
 // ---- leitura/escrita de strings do convidado ----
 
 function readGuestCString(address) {
@@ -88,6 +91,8 @@ const exportNames = [
     'RtlCompareUnicodeString',
     'RtlCopyUnicodeString',
     'RtlEqualUnicodeString',
+    'KeQuerySystemTime',
+    'KeQueryTickCount',
 ];
 
 const exportHandlers = [
@@ -151,6 +156,20 @@ const exportHandlers = [
         let a = readUnicodeString(pointerA), b = readUnicodeString(pointerB);
         if (caseInsensitive) { a = a.toLowerCase(); b = b.toLowerCase(); }
         return a === b ? 1 : 0;
+    },
+    // KeQuerySystemTime(outputPointer u64): intervalos de 100ns desde 1601
+    (outputPointer) => {
+        const ntTime = (Date.now() + 11644473600000) * 10000;
+        os.writePhysical32(outputPointer, ntTime % 0x100000000);
+        os.writePhysical32(outputPointer + 4, Math.floor(ntTime / 0x100000000));
+        return 0;
+    },
+    // KeQueryTickCount(outputPointer u64): milissegundos desde o boot
+    (outputPointer) => {
+        const ticks = Date.now() - bootEpochMs;
+        os.writePhysical32(outputPointer, ticks % 0x100000000);
+        os.writePhysical32(outputPointer + 4, Math.floor(ticks / 0x100000000));
+        return 0;
     },
 ];
 

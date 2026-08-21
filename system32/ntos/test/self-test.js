@@ -132,6 +132,9 @@ function run() {
     // grupo 3: Rtl unicode strings (Compare/Copy/Equal)
     testNativeDriver('/rtlstr.sys', '\\Device\\RtlStr', 'rtl-str-ok');
 
+    // grupo 4: Ke tempo (KeQuerySystemTime/KeQueryTickCount)
+    testNativeDriver('/ketime.sys', '\\Device\\KeTime', 'ke-time-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 
