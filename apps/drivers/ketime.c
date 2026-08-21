@@ -51,7 +51,7 @@ static NTSTATUS timeRead(ULONG64 devicePtr, ULONG64 irpPtr) {
 NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
     JSOS_DRIVER_OBJECT *driverObject = (JSOS_DRIVER_OBJECT *)(ULONG64)driverObjectPtr;
     ULONG64 *dispatch = (ULONG64 *)(ULONG64)driverObject->DispatchTable;
-    ULONG64 systemTime = 0, ticks = 0;
+    ULONG64 systemTime = 0, ticksFirst = 0, ticksSecond = 0;
     UNICODE_STRING deviceName;
     ULONG64 devicePtr = 0;
     (void)registryPath;
@@ -59,10 +59,12 @@ NTSTATUS DriverEntry(ULONG64 driverObjectPtr, ULONG64 registryPath) {
     DbgPrint("ketime.sys: DriverEntry\r\n");
 
     KeQuerySystemTime(&systemTime);
-    KeQueryTickCount(&ticks);
+    KeQueryTickCount(&ticksFirst);
+    KeQueryTickCount(&ticksSecond);
 
-    /* 1.3e17 intervalos de 100ns ~ ano 2024+; ticks devem existir */
-    allPassed = (systemTime > 130000000000000000ULL) && (ticks > 0);
+    /* tempo de sistema plausivel (ano 2024+) e tick monotonico */
+    allPassed = (systemTime > 130000000000000000ULL) &&
+                (ticksSecond >= ticksFirst);
 
     dispatch[IRP_MJ_READ] = (ULONG64)(ULONG64)&timeRead;
     RtlInitUnicodeString(&deviceName, L"\\Device\\KeTime");
