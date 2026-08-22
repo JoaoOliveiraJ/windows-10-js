@@ -172,4 +172,4 @@ const JSCFunctionListEntry jsos_system_funcs[] = {
     JS_CFUNC_DEF("getGuestArenaBase", 0, prim_getGuestArenaBase),
     JS_CFUNC_DEF("halt", 0, prim_halt),
 };
-const int jsos_system_funcs_count = 10;
+const int jsos_system_funcs_count = 11;

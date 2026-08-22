@@ -9,7 +9,8 @@
 //   0x100000-0x1FFFFF    imagem do kernel (<= 1MB)
 //   0x200000-0x2FFFFF    pilha do kernel (topo 0x300000)
 //   0x400000-0x4FFFFF    area de .exe PE (1MB)
-//   0x500000-0x1FFFFFF   drivers .sys (27MB, 1MB por driver)
+//   0x500000-0x1FFFFFF   drivers .sys (512KB cada; o build falha se encostar
+//                        no heap em 0x2000000)
 //   0x2000000-0x5FFFFFF  heap do kernel (kmalloc, 64MB) — inclui a arena
 //                        de 16MB dos drivers convidados
 //   0x6000000-0xFFFFFFF  arena PFN (frames fisicos gerenciados, 160MB)

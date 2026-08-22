@@ -65,6 +65,7 @@ module.exports = {
         STACK_COUNT: 0x42,
         CURRENT_LOCATION: 0x43,
         CANCEL: 0x44,
+        CANCEL_ROUTINE: 0x68,    // PDRIVER_CANCEL (device, irp)
         USER_IOSB: 0x48,         // Tail antes? nao: campo direto (wdm.h x64)
         USER_EVENT: 0x50,
         USER_BUFFER: 0x70,

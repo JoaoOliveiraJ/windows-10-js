@@ -173,6 +173,8 @@ module.exports = {
         'IoAllocateMdl',                  // (va, length, secondary, chargeQuota, irpPtr)
         'IoFreeMdl',
         'IoGetCurrentThread',
+        'IoSetCancelRoutine',             // (irpPtr, routinePtr) -> anterior
+        'IoCancelIrp',                    // (irpPtr) — cancela de verdade
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -315,5 +317,29 @@ module.exports = {
         (mdlPointer) => { GuestMemory.guestFreeBytes(mdlPointer); return 0; },
         // IoGetCurrentThread() -> handle da thread nativa corrente
         () => require('ntos/ps/kernel-threads').getCurrentThreadHandle(),
+        // IoSetCancelRoutine(irpPtr, routinePtr) -> routine anterior (o NT
+        // devolve a cancel routine previamente registrada no IRP)
+        (ioRequestPointer, routinePointer) => {
+            const previous = GuestMemory.readGuest64(ioRequestPointer +
+                                                     NtAbi.IRP.CANCEL_ROUTINE);
+            GuestMemory.writeGuest64(ioRequestPointer + NtAbi.IRP.CANCEL_ROUTINE,
+                                     routinePointer >>> 0);
+            return previous;
+        },
+        // IoCancelIrp(irpPtr): marca Cancel e chama a cancel routine do IRP
+        // (PDRIVER_CANCEL = void (PDEVICE_OBJECT, PIRP); o device vem do slot)
+        (ioRequestPointer) => {
+            GuestMemory.writeGuest8(ioRequestPointer + NtAbi.IRP.CANCEL, 1);
+            const cancelRoutine = GuestMemory.readGuest64(ioRequestPointer +
+                                                          NtAbi.IRP.CANCEL_ROUTINE);
+            if (!cancelRoutine) return 0;
+            GuestMemory.writeGuest64(ioRequestPointer + NtAbi.IRP.CANCEL_ROUTINE, 0);
+            const stackPointer = GuestMemory.readGuest32(ioRequestPointer +
+                                                         NtAbi.IRP.CURRENT_STACK_LOCATION);
+            const devicePointer = GuestMemory.readGuest32(stackPointer +
+                                                          NtAbi.IO_STACK_LOCATION.DEVICE_OBJECT);
+            os.execMsAbi(cancelRoutine, devicePointer, ioRequestPointer);
+            return 0;
+        },
     ],
 };

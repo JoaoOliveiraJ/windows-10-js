@@ -384,6 +384,12 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\MemDrv'), 'memdrv device criado');
     checkNativeDriver('\\Device\\MemDrv', 'memdrv-ok');
 
+    // grupo 26: cancelamento de IRP real + ZwOpenFile/QueryInformationFile/
+    // SetInformationFile(delete)
+    Ntoskrnl.loadDriver('/cancel.sys');
+    assert(ObjectManager.lookup('\\Device\\Cancel'), 'cancel device criado');
+    checkNativeDriver('\\Device\\Cancel', 'cancel-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

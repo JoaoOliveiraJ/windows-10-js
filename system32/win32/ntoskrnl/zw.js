@@ -180,6 +180,9 @@ module.exports = {
         'ZwEnumerateValueKey',
         'ZwDeleteKey',
         'ZwQueryFullAttributesFile',
+        'ZwOpenFile',
+        'ZwQueryInformationFile',
+        'ZwSetInformationFile',
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -303,6 +306,49 @@ module.exports = {
                                          Math.floor(ntTimeNow / 0x100000000));
             }
             GuestMemory.writeGuest32(outBufferPointer + 0x20, 0x80);  // NORMAL
+            return 0;
+        },
+        // ZwOpenFile(outHandle, access, objAttrs, ioStatus, share, options):
+        // abre arquivo existente (= ZwCreateFile com FILE_OPEN)
+        (outHandlePointer, desiredAccess, objectAttributesPointer,
+         ioStatusPointer, _shareAccess, _openOptions) =>
+            zwCreateFile(outHandlePointer, desiredAccess, objectAttributesPointer,
+                         ioStatusPointer, 0, 0, 0, FILE_OPEN, 0, 0, 0),
+        // ZwQueryInformationFile(handle, ioStatus, out, length, infoClass)
+        // FileStandardInformation(5): +0 AllocationSize u64, +8 EndOfFile u64,
+        // +16 NumberOfLinks u32, +20 DeletePending u8, +21 Directory u8
+        (fileHandle, ioStatusPointer, outBufferPointer, bufferLength,
+         infoClass) => {
+            const entry = fileHandles.get(fileHandle >>> 0);
+            if (!entry) return STATUS_INVALID_HANDLE | 0;
+            if ((infoClass >>> 0) !== 5) return 0xC000000D | 0;  // FileStandardInformation
+            if (bufferLength < 0x18) return STATUS_BUFFER_TOO_SMALL | 0;
+            const size = entry.fs.size ? entry.fs.size(entry.fsPath) : 0;
+            GuestMemory.writeGuest64(outBufferPointer, size);        // AllocationSize
+            GuestMemory.writeGuest64(outBufferPointer + 8, size);    // EndOfFile
+            GuestMemory.writeGuest32(outBufferPointer + 16, 1);      // NumberOfLinks
+            GuestMemory.writeGuest8(outBufferPointer + 20, 0);       // DeletePending
+            GuestMemory.writeGuest8(outBufferPointer + 21, 0);       // Directory=FALSE
+            writeIoStatus(ioStatusPointer, 0, 0x18);
+            return 0;
+        },
+        // ZwSetInformationFile(handle, ioStatus, in, length, infoClass)
+        // FileDispositionInformation(13/64): { DeleteFile u8 } — deleta de
+        // verdade (ramfs); NTFS e' read-only -> MEDIA_WRITE_PROTECTED
+        (fileHandle, ioStatusPointer, inputPointer, _bufferLength,
+         infoClass) => {
+            const entry = fileHandles.get(fileHandle >>> 0);
+            if (!entry) return STATUS_INVALID_HANDLE | 0;
+            const infoClassValue = infoClass >>> 0;
+            if (infoClassValue !== 13 && infoClassValue !== 64)
+                return 0xC000000D | 0;
+            const shouldDelete = GuestMemory.readGuest8(inputPointer) !== 0;
+            if (shouldDelete) {
+                if (typeof entry.fs.remove !== 'function')
+                    return STATUS_MEDIA_WRITE_PROTECTED | 0;
+                entry.fs.remove(entry.fsPath);
+            }
+            writeIoStatus(ioStatusPointer, 0, 0);
             return 0;
         },
     ],

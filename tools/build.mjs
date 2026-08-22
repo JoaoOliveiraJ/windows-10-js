@@ -153,9 +153,16 @@ run(zig, ['dlltool', '-d', defFile, '-l', path.join(buildDir, 'ntoskrnl.lib')]);
 
 const builtDrivers = [];
 const driverSources = walk(path.join(root, 'apps', 'drivers')).filter(f => f.endsWith('.c'));
+const DRIVER_IMAGE_AREA_TOP = 0x2000000;   // heap do kernel comeca aqui (kmalloc)
 driverSources.forEach((driverSource, index) => {
     const driverName = path.basename(driverSource, '.c');
-    const imageBase = '0x' + (0x500000 + index * 0x100000).toString(16);
+    // 512KB por driver (as imagens tem ~24KB) — nunca encosta no heap
+    const imageBaseValue = 0x500000 + index * 0x80000;
+    if (imageBaseValue + 0x80000 > DRIVER_IMAGE_AREA_TOP) {
+        console.error(`drivers demais: ${driverName} cairia em 0x${imageBaseValue.toString(16)} (heap em 0x2000000)`);
+        process.exit(1);
+    }
+    const imageBase = '0x' + imageBaseValue.toString(16);
     const sysFile = path.join(buildDir, driverName + '.sys');
     if (msvcOk) {
         const objFile = path.join(buildDir, driverName + '.obj');

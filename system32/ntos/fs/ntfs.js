@@ -157,6 +157,13 @@ function mount(drive) {
     return {
         exists(path) { return findInRoot(path) !== null; },
         list() { return rootIndex().map(e => '/' + e.name); },
+        size(path) {
+            const e = findInRoot(path);
+            if (!e) return -1;
+            const rec = readRecord(drive, vol, e.ref);
+            const data = readData(drive, vol, rec);
+            return data.length;
+        },
         readBytes(path) {
             const e = findInRoot(path);
             if (!e) return null;
