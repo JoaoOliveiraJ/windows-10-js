@@ -26,17 +26,23 @@ module.exports = {
         STRUCT_SIZE: 0x70 + 29 * 8,
         IO_TYPE: 4,
     },
-    // DEVICE_OBJECT (wdm.h)
+    // DEVICE_OBJECT (wdm.h x64, sizeof = 0x150)
     DEVICE_OBJECT: {
         TYPE: 0,                 // IO_TYPE_DEVICE = 3
         SIZE: 2,
         REFERENCE_COUNT: 4,
         DRIVER_OBJECT: 0x08,
         NEXT_DEVICE: 0x10,       // lista ligada na cabeca do driver (como o NT)
+        ATTACHED_DEVICE: 0x18,   // topo da pilha de devices (IoAttachDevice)
         CURRENT_IRP: 0x20,
-        FLAGS: 0x38,
-        CHARACTERISTICS: 0x3C,
-        STRUCT_SIZE: 0x200,      // espaco de sobra p/ extensoes
+        TIMER: 0x28,
+        FLAGS: 0x30,             // DO_BUFFERED_IO etc.
+        CHARACTERISTICS: 0x34,   // FILE_REMOVABLE_MEDIA etc.
+        VPB: 0x38,
+        DEVICE_EXTENSION: 0x40,  // logo apos o DEVICE_OBJECT (IoCreateDevice)
+        DEVICE_TYPE: 0x48,
+        STACK_SIZE: 0x4C,
+        STRUCT_SIZE: 0x150,
         IO_TYPE: 3,
     },
     // IRP (wdm.h) + IO_STACK_LOCATION
@@ -63,10 +69,18 @@ module.exports = {
         IOCTL_OUT_LENGTH: 0x08,  // DeviceIoControl.OutputBufferLength
         IOCTL_IN_LENGTH: 0x0C,
         IOCTL_CODE: 0x10,
+        POWER_SYSTEM_CONTEXT: 0x08,  // Parameters.Power.SystemContext
+        POWER_TYPE: 0x10,            // Parameters.Power.Type (POINTER_ALIGNMENT)
+        POWER_STATE: 0x18,           // Parameters.Power.State (POWER_STATE)
+        POWER_SHUTDOWN_TYPE: 0x20,   // Parameters.Power.ShutdownType
         DEVICE_OBJECT: 0x28,
         FILE_OBJECT: 0x30,
         SIZE: 0x48,
     },
+    // POWER_STATE_TYPE (wdm.h)
+    POWER_STATE_TYPE: { SYSTEM_POWER_STATE: 0, DEVICE_POWER_STATE: 1 },
+    // DEVICE_POWER_STATE (wdm.h)
+    DEVICE_POWER_STATE: { UNSPECIFIED: 0, D0: 1, D1: 2, D2: 3, D3: 4 },
     // OBJECT_ATTRIBUTES (wdm.h)
     OBJECT_ATTRIBUTES: {
         LENGTH: 0,

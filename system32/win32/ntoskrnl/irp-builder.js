@@ -7,7 +7,7 @@ const NtAbi = require('win32/nt-abi');
 const GuestMemory = require('win32/guest-memory');
 
 // constroi um IRP com 1 stack location em `address` (area zerada pelo caller)
-function build(address, { major, minor, buffer, bufferLength, deviceObject }) {
+function build(address, { major, minor, buffer, bufferLength, deviceObject, power }) {
     const IRP = NtAbi.IRP, SL = NtAbi.IO_STACK_LOCATION;
     for (let i = 0; i < IRP.STRUCT_SIZE + IRP.STACK_LOCATION_SIZE; i += 4)
         GuestMemory.writeGuest32(address + i, 0);
@@ -27,6 +27,13 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject }) {
     GuestMemory.writeGuest32(stack + SL.READ_LENGTH, bufferLength);
     GuestMemory.writeGuest64(stack + SL.READ_OFFSET, 0);
     GuestMemory.writeGuest64(stack + SL.DEVICE_OBJECT, deviceObject);
+
+    // IRP_MJ_POWER: Parameters.Power.{Type,State} (uniao, por cima dos campos
+    // de Read/Write — como no wdm.h)
+    if (power) {
+        GuestMemory.writeGuest32(stack + SL.POWER_TYPE, power.powerStateType);
+        GuestMemory.writeGuest32(stack + SL.POWER_STATE, power.deviceState);
+    }
 }
 
 // le o IoStatus apos a execucao do driver

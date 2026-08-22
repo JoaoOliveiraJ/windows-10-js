@@ -168,6 +168,32 @@ function run() {
     checkNativeDriver('\\Device\\RtlAnsi', 'rtl-ansi-ok');
     checkNativeDriver('\\Device\\Registry', 'registry-ok');
 
+    // Power Manager: IRP_MJ_POWER SET/QUERY_POWER com estado real rastreado
+    const DevicePowerState = require('win32/nt-abi').DEVICE_POWER_STATE;
+    assert(ObjectManager.lookup('\\Device\\Power'), 'power carregado no boot');
+    let powerRead = IoManager.read('\\Device\\Power');
+    assert(powerRead.result === 'power-D0', 'device comeca em D0');
+    const setD2 = IoManager.setDevicePowerState('\\Device\\Power',
+                                                DevicePowerState.D2);
+    assert(setD2.status === IoManager.STATUS.SUCCESS,
+           'SET_POWER D2 aceito (status=0x' + (setD2.status >>> 0).toString(16) + ')');
+    powerRead = IoManager.read('\\Device\\Power');
+    assert(powerRead.result === 'power-D2',
+           'driver entrou em D2 -> "' + powerRead.result + '"');
+    assert(IoManager.getDevicePowerState('\\Device\\Power') === DevicePowerState.D2,
+           'Power Manager registrou D2 (PoSetPowerState)');
+    const queryD3 = IoManager.queryDevicePowerState('\\Device\\Power',
+                                                    DevicePowerState.D3);
+    assert(queryD3.status === IoManager.STATUS.SUCCESS,
+           'QUERY_POWER D3 aceito (status=0x' + (queryD3.status >>> 0).toString(16) + ')');
+    powerRead = IoManager.read('\\Device\\Power');
+    assert(powerRead.result === 'power-D2', 'QUERY_POWER nao muda o estado');
+    IoManager.setDevicePowerState('\\Device\\Power', DevicePowerState.D0);
+    powerRead = IoManager.read('\\Device\\Power');
+    assert(powerRead.result === 'power-D0', 'voltou a D0');
+    assert(IoManager.getDevicePowerState('\\Device\\Power') === DevicePowerState.D0,
+           'Power Manager registrou D0');
+
     // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS
     Ntoskrnl.loadDriver('/lifecycle.sys');
     assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');

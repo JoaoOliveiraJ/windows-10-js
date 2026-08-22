@@ -10,18 +10,26 @@ const GuestStrings = require('win32/guest-strings');
 const ObjectManager = require('ntos/ob/object-manager');
 const WorkItems = require('ntos/io/work-items');
 const Lifecycle = require('win32/ntoskrnl/lifecycle');
+const PowerManager = require('ntos/po/power-manager');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
-// cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver
-function createDevice(driverObjectPointer, deviceName, outputPointer) {
+// cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver.
+// A DeviceExtension (se pedida) fica logo apos o DEVICE_OBJECT, como o NT faz.
+function createDevice(driverObjectPointer, extensionSize, deviceName, deviceType,
+                      characteristics, outputPointer) {
     const shortName = deviceName ? deviceName.replace(/^\\Device\\/i, '') : 'Unnamed';
-    const devicePage = GuestMemory.guestAllocBytes(DEVICE.STRUCT_SIZE);
+    const devicePage = GuestMemory.guestAllocBytes(DEVICE.STRUCT_SIZE + extensionSize);
 
     GuestMemory.writeGuest16(devicePage + DEVICE.TYPE, DEVICE.IO_TYPE);
     GuestMemory.writeGuest16(devicePage + DEVICE.SIZE, DEVICE.STRUCT_SIZE);
     GuestMemory.writeGuest32(devicePage + DEVICE.REFERENCE_COUNT, 1);
     GuestMemory.writeGuest64(devicePage + DEVICE.DRIVER_OBJECT, driverObjectPointer);
+    GuestMemory.writeGuest32(devicePage + DEVICE.DEVICE_TYPE, deviceType >>> 0);
+    GuestMemory.writeGuest32(devicePage + DEVICE.CHARACTERISTICS, characteristics >>> 0);
+    GuestMemory.writeGuest8(devicePage + DEVICE.STACK_SIZE, 1);
+    GuestMemory.writeGuest64(devicePage + DEVICE.DEVICE_EXTENSION,
+                             extensionSize ? devicePage + DEVICE.STRUCT_SIZE : 0);
 
     // encadeia na cabeca da lista de devices do driver (como o NT)
     const previousHead = GuestMemory.readGuest32(driverObjectPointer + NtAbi.DRIVER_OBJECT.DEVICE_OBJECT);
@@ -68,6 +76,7 @@ function deleteDevice(devicePointer) {
         }
     }
     GuestMemory.guestFreeBytes(devicePointer);
+    PowerManager.forgetDevice(devicePointer);
     return 0;
 }
 
@@ -87,11 +96,11 @@ module.exports = {
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
-        (driverObjectPointer, _extensionSize, namePointer, _deviceType,
-         _characteristics, _exclusive, outputPointer) =>
-            createDevice(driverObjectPointer,
+        (driverObjectPointer, extensionSize, namePointer, deviceType,
+         characteristics, _exclusive, outputPointer) =>
+            createDevice(driverObjectPointer, extensionSize >>> 0,
                          namePointer ? GuestStrings.readUnicodeString(namePointer) : null,
-                         outputPointer),
+                         deviceType >>> 0, characteristics >>> 0, outputPointer),
         // IoCreateSymbolicLink(linkUniPtr, targetUniPtr)
         (linkPointer, targetPointer) => {
             ObjectManager.createSymlink(GuestStrings.readUnicodeString(linkPointer),

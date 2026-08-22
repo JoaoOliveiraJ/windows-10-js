@@ -22,6 +22,7 @@ const IRP_MJ = {
     READ:           0x03,
     WRITE:          0x04,
     DEVICE_CONTROL: 0x0E,
+    POWER:          0x16,
     PNP:            0x1B,
 };
 
@@ -31,9 +32,13 @@ const STATUS = {
     NOT_SUPPORTED: -3,
 };
 
-// minor codes do IRP_MJ_PNP
+// minor codes do IRP_MJ_PNP / IRP_MJ_POWER (valores reais do wdm.h)
 const IRP_MN = {
-    START_DEVICE: 0,
+    START_DEVICE:  0,
+    WAIT_WAKE:     0,
+    POWER_SEQUENCE: 1,
+    SET_POWER:     2,
+    QUERY_POWER:   3,
 };
 
 let nextIoRequestId = 1;
@@ -85,12 +90,19 @@ function callNativeDriver(device, ioRequestPacket) {
 
     const data = ioRequestPacket.params.data;
     const dataLength = data ? String(data).length : 0;
+    // buffer de dados so existe p/ READ/WRITE/DEVICE_CONTROL (METHOD_BUFFERED)
+    const needsBuffer = ioRequestPacket.major === IRP_MJ.READ ||
+                        ioRequestPacket.major === IRP_MJ.WRITE ||
+                        ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL;
     const bufferLength = ioRequestPacket.major === IRP_MJ.WRITE ? dataLength : 2048;
 
-    const bufferAddress = GuestMemory.guestAllocBytes(Math.max(1, bufferLength));
-    if (data)
-        for (let i = 0; i < dataLength; i++)
-            GuestMemory.writeGuest8(bufferAddress + i, String(data).charCodeAt(i) & 0xFF);
+    let bufferAddress = 0;
+    if (needsBuffer) {
+        bufferAddress = GuestMemory.guestAllocBytes(Math.max(1, bufferLength));
+        if (data)
+            for (let i = 0; i < dataLength; i++)
+                GuestMemory.writeGuest8(bufferAddress + i, String(data).charCodeAt(i) & 0xFF);
+    }
 
     const irpAddress = GuestMemory.guestAllocBytes(NtAbi.IRP.STRUCT_SIZE +
                                                    NtAbi.IRP.STACK_LOCATION_SIZE);
@@ -98,8 +110,9 @@ function callNativeDriver(device, ioRequestPacket) {
         major: ioRequestPacket.major,
         minor: ioRequestPacket.minor,
         buffer: bufferAddress,
-        bufferLength,
+        bufferLength: needsBuffer ? bufferLength : 0,
         deviceObject: devicePointer,
+        power: ioRequestPacket.params.power,
     });
 
     const guestStatus = os.execMsAbi(handlerAddress, devicePointer, irpAddress);
@@ -118,8 +131,22 @@ function callNativeDriver(device, ioRequestPacket) {
     }
 
     GuestMemory.guestFreeBytes(irpAddress);
-    GuestMemory.guestFreeBytes(bufferAddress);
+    if (bufferAddress) GuestMemory.guestFreeBytes(bufferAddress);
     return ioRequestPacket;
+}
+
+// ---- IRP_MJ_POWER: entrega um IRP JA construido na memoria do convidado ----
+// Usado pelo PoCallDriver/PoStartNextPowerIrp (pilha de devices, fila Po).
+function dispatchNativePowerIrp(devicePointer, ioRequestPointer) {
+    const driverObjectPointer = GuestMemory.readGuest32(devicePointer +
+                                                        NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
+    const handlerAddress =
+        GuestMemory.readGuest64(driverObjectPointer + NtAbi.DRIVER_OBJECT.MAJOR_FUNCTION +
+                                IRP_MJ.POWER * 8);
+    if (!handlerAddress) return STATUS.NOT_SUPPORTED;
+    const guestStatus = os.execMsAbi(handlerAddress, devicePointer, ioRequestPointer);
+    const ioStatus = IrpBuilder.readIoStatus(ioRequestPointer);
+    return ioStatus.status !== 0 ? ioStatus.status : guestStatus;
 }
 
 // IoCallDriver: entrega o IRP ao driver dono do dispositivo
@@ -161,6 +188,46 @@ function pnpStartDevice(device) {
     return ioRequest.status;
 }
 
+// ---- Power Manager: IRP_MJ_POWER SET/QUERY_POWER (device power state) ----
+const PowerManager = require('ntos/po/power-manager');
+const NtAbiPower = require('win32/nt-abi');
+
+function sendPowerRequest(devicePath, minorFunction, deviceState) {
+    const device = ObjectManager.lookup(devicePath);
+    if (!device || device.type !== 'Device')
+        return makeIoRequest(IRP_MJ.POWER, { minor: minorFunction,
+                                             status: STATUS.NOT_FOUND });
+    const devicePointer = device.data.nativeDevicePointer;
+    const ioRequest = makeIoRequest(IRP_MJ.POWER, {
+        minor: minorFunction,
+        power: { powerStateType: NtAbiPower.POWER_STATE_TYPE.DEVICE_POWER_STATE,
+                 deviceState },
+    });
+    // contabiliza no Power Manager: em processamento durante o dispatch
+    if (devicePointer) PowerManager.markPowerRequestStarted(devicePointer);
+    callDriver(devicePath, ioRequest);
+    if (devicePointer) PowerManager.markPowerRequestDone(devicePointer);
+    return ioRequest;
+}
+
+// Po: SET_POWER D0..D3 no device (o driver chama PoSetPowerState internamente)
+function setDevicePowerState(devicePath, deviceState) {
+    return sendPowerRequest(devicePath, IRP_MN.SET_POWER, deviceState);
+}
+
+// Po: QUERY_POWER (pergunta se o device aceita ir p/ deviceState)
+function queryDevicePowerState(devicePath, deviceState) {
+    return sendPowerRequest(devicePath, IRP_MN.QUERY_POWER, deviceState);
+}
+
+// estado de energia corrente registrado no Power Manager
+function getDevicePowerState(devicePath) {
+    const device = ObjectManager.lookup(devicePath);
+    if (!device || device.type !== 'Device') return null;
+    return PowerManager.getDevicePowerState(device.data.nativeDevicePointer);
+}
+
 module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    createDevice, callDriver, read, write, deviceControl,
-                   pnpStartDevice };
+                   pnpStartDevice, setDevicePowerState, queryDevicePowerState,
+                   getDevicePowerState, dispatchNativePowerIrp };

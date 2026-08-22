@@ -67,6 +67,7 @@ function init() {
     seedService('irql',      'irql.sys',      1);
     seedService('rtlansi',   'rtlansi.sys',   1);
     seedService('registry',  'registry.sys',  1);
+    seedService('power',     'power.sys',     1);
 }
 
 module.exports = { init };
