@@ -19,6 +19,7 @@ function tryBoot(accelArgs) {
     return new Promise((resolve) => {
         const args = [
             '-accel', 'whpx',
+            '-machine', 'pc,kernel-irqchip=off',
             '-m', '4096',
             '-smp', '4',
             '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,

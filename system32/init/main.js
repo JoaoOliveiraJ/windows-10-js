@@ -26,6 +26,7 @@ const Phase0           = require('init/phase0');
 const Phase1           = require('init/phase1');
 const Shell            = require('shell/shell');
 const SharedUserData   = require('ntos/mm/shared-user-data');
+const Interrupts       = require('nano/interrupts');
 
 require('ntos/ex/syscalls');     // registra a tabela SystemCall
 const Win32     = require('win32/win32');      // mini-kernel32
@@ -70,8 +71,40 @@ function kmain() {
     // processos: servico de teclado (IPC) + shell
     Scheduler.spawn('kbd-service', KbdService);
     Scheduler.spawn('shell', Shell.main);
-    os.debugPrint('[kernel] idle loop - escalonador cooperativo ativo');
-    for (;;) { SharedUserData.updateSystemTimes(); Scheduler.tick(); Ntoskrnl.runKernelTasks(); }
+
+    // PREEMPCAO POR TIMER: cada IRQ0 (100 Hz) e' um quantum — o escalonador
+    // roda um passo por quantum de hardware. Se a plataforma nao entregar
+    // IRQs (WHPX antigo), cai no modo cooperativo com log claro.
+    const Clock = require('ntos/ke/clock');
+    Interrupts.registerIrqHandler(Interrupts.VECTOR_LAPIC_TIMER,
+        () => Scheduler.tick());
+    const cooperativeFallback = () => {
+        const warmupEnd = Clock.uptimeMs() + 300;
+        while (Clock.uptimeMs() < warmupEnd) {
+            SharedUserData.updateSystemTimes();
+            Ntoskrnl.runKernelTasks();
+            Interrupts.dispatchPending();
+            Scheduler.tick();   // cooperativo durante o warmup
+        }
+        return Interrupts.irqsArriving();
+    };
+    if (cooperativeFallback()) {
+        os.debugPrint('[kernel] preempcao por timer ativa (quantum 10ms, LAPIC timer vetor 0x40)');
+        for (;;) {
+            SharedUserData.updateSystemTimes();
+            Ntoskrnl.runKernelTasks();
+            Interrupts.dispatchPending();   // IRQ0 -> Scheduler.tick()
+        }
+    } else {
+        os.debugPrint('[kernel] AVISO: plataforma nao entrega IRQs — ' +
+                      'escalonador cooperativo (sem preempcao)');
+        for (;;) {
+            SharedUserData.updateSystemTimes();
+            Ntoskrnl.runKernelTasks();
+            Interrupts.dispatchPending();
+            Scheduler.tick();
+        }
+    }
 }
 
 kmain();

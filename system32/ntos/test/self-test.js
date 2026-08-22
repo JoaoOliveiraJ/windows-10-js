@@ -126,14 +126,18 @@ function run() {
     assert(ntfs.read('/HELLO.TXT').indexOf('jsOS') >= 0, 'ntfs read');
     assert(ObjectManager.open('\\DosDevices\\D:\\HELLO.TXT') > 0, 'ntfs via D:');
 
-    // nanokernel: IRQ0/LAPIC timer - so onde a plataforma suporta
+    // nanokernel: IRQ0/PIT — o timer DEVE estar disparando (IDT em JS,
+    // entrega real pela plataforma)
     if (Interrupts.isAvailable()) {
         const t0 = Interrupts.tickCount();
-        let spins = 0;
-        while (Interrupts.tickCount() === t0 && spins < 100000000) spins++;
-        assert(Interrupts.tickCount() > t0, 'timer disparando (IDT em JS)');
+        const ClockSmp = require('ntos/ke/clock');
+        const waitEnd = ClockSmp.uptimeMs() + 100;
+        while (Interrupts.tickCount() === t0 && ClockSmp.uptimeMs() < waitEnd) {
+            /* espera o proximo tick de hardware */
+        }
+        assert(Interrupts.tickCount() > t0, 'timer IRQ0 disparando (entrega real)');
     } else {
-        os.debugPrint('[selftest] plataforma sem IRQ (WHPX) - tick test pulado');
+        os.debugPrint('[selftest] IDT nao carregada - tick test pulado');
     }
 
     // nanokernel: IPC por canal nomeado
