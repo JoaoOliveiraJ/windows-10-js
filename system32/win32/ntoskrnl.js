@@ -21,6 +21,12 @@ function lookup(dllName, functionName) {
     return index < 0 ? -1 : 32 + index;
 }
 
+// ordinal N da nossa .def = indice N-1 da tabela (ordem de groups.js)
+function lookupOrdinal(dllName, ordinal) {
+    if (ordinal < 1 || ordinal > exportNames.length) return -1;
+    return 32 + (ordinal - 1);
+}
+
 // handler chamado pelo C (js_win32_dispatch; id ja sem o offset 32)
 function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
                 arg8, arg9, arg10, arg11, arg12) {
@@ -39,6 +45,7 @@ function runKernelTasks() {
     require('ntos/ke/timer').checkTimers();
     require('ntos/ke/dpc').runQueue();
     require('ntos/io/work-items').runQueue();
+    require('ntos/io/io-timer').checkIoTimers();
 }
 
 // o C (js_win32_dispatch) procura globalThis.Ntoskrnl.handle
@@ -48,6 +55,7 @@ const Lifecycle = require('win32/ntoskrnl/lifecycle');
 
 module.exports = {
     lookup,
+    lookupOrdinal,
     loadDriver: Lifecycle.loadDriver,
     unloadDriver: Lifecycle.unloadDriver,
     getDriverExport: Lifecycle.getDriverExport,

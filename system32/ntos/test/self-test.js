@@ -332,6 +332,20 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\Mmio'), 'mmio device criado');
     checkNativeDriver('\\Device\\Mmio', 'mmio-ok');
 
+    // grupo 19: I/O sincrono driver->driver (IoBuild* + KEVENT) pela pilha
+    // inteira (filtro->echo) e IoTimer de 1s do NT
+    Ntoskrnl.loadDriver('/syncio.sys');
+    assert(ObjectManager.lookup('\\Device\\SyncIo'), 'syncio device criado');
+    {
+        const KernelClock2 = require('ntos/ke/clock');
+        const timerDeadline = KernelClock2.uptimeMs() + 1300;
+        while (KernelClock2.uptimeMs() < timerDeadline) {
+            Ntoskrnl.runKernelTasks();
+            Scheduler.tick();
+        }
+    }
+    checkNativeDriver('\\Device\\SyncIo', 'syncio-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

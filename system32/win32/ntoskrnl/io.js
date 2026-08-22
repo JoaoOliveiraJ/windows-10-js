@@ -77,6 +77,7 @@ function deleteDevice(devicePointer) {
     }
     GuestMemory.guestFreeBytes(devicePointer);
     PowerManager.forgetDevice(devicePointer);
+    require('ntos/io/io-timer').forgetDevice(devicePointer);
     return 0;
 }
 
@@ -163,6 +164,11 @@ module.exports = {
         'IoAttachDeviceToDeviceStack',
         'IoDetachDevice',
         'IoGetDeviceObjectPointer',
+        'IoBuildSynchronousFsdRequest',   // (major, dev, buf, len, offPtr, event, iosb)
+        'IoBuildDeviceIoControlRequest',  // (code, dev, in, inLen, out, outLen, internal, event, iosb)
+        'IoInitializeTimer',              // (dev, routinePtr, contextPtr)
+        'IoStartTimer',
+        'IoStopTimer',
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -240,5 +246,30 @@ module.exports = {
         (namePointer, access, fileObjectOut, deviceObjectOut) =>
             getDeviceObjectPointer(namePointer, access, fileObjectOut,
                                    deviceObjectOut),
+        // IoBuildSynchronousFsdRequest(major, devPtr, bufPtr, len, offPtr,
+        //                              eventPtr, iosbPtr) -> IRP
+        (major, devicePointer, bufferPointer, length, byteOffsetPointer,
+         eventPointer, ioStatusPointer) =>
+            require('ntos/io/io-manager').buildSynchronousFsdRequest(
+                major, devicePointer, bufferPointer, length, byteOffsetPointer,
+                eventPointer, ioStatusPointer),
+        // IoBuildDeviceIoControlRequest(code, devPtr, inPtr, inLen, outPtr,
+        //                               outLen, internal, eventPtr, iosbPtr)
+        (ioctlCode, devicePointer, inputBuffer, inputLength, outputBuffer,
+         outputLength, internal, eventPointer, ioStatusPointer) =>
+            require('ntos/io/io-manager').buildDeviceIoControlRequest(
+                ioctlCode, devicePointer, inputBuffer, inputLength,
+                outputBuffer, outputLength, internal, eventPointer,
+                ioStatusPointer),
+        // IoInitializeTimer(devPtr, routinePtr, contextPtr)
+        (devicePointer, routinePointer, contextPointer) =>
+            require('ntos/io/io-timer').initializeTimer(devicePointer,
+                routinePointer, contextPointer),
+        // IoStartTimer(devPtr)
+        (devicePointer) =>
+            require('ntos/io/io-timer').startTimer(devicePointer),
+        // IoStopTimer(devPtr)
+        (devicePointer) =>
+            require('ntos/io/io-timer').stopTimer(devicePointer),
     ],
 };

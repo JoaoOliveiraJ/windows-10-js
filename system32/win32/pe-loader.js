@@ -15,13 +15,22 @@ const STUB_SIZE = 10;   // bytes por trampolim (ver hal/win32/win32thunk.asm)
 // resolvedores de DLL registrados: quem importa o que (kernel32, ntoskrnl...)
 const resolvers = [];
 
-function registerResolver(dllPattern, lookupFunction) {
-    resolvers.push({ dllPattern, lookupFunction });
+function registerResolver(dllPattern, lookupFunction, lookupOrdinal) {
+    resolvers.push({ dllPattern, lookupFunction, lookupOrdinal });
 }
 
 function resolveImport(dllName, functionName) {
     for (const r of resolvers) {
         if (r.dllPattern.test(dllName)) return r.lookupFunction(dllName, functionName);
+    }
+    return -1;
+}
+
+// import por ORDINAL (ILT com bit alto): o resolvedor mapeia ordinal -> id
+function resolveOrdinal(dllName, ordinal) {
+    for (const r of resolvers) {
+        if (r.dllPattern.test(dllName))
+            return r.lookupOrdinal ? r.lookupOrdinal(dllName, ordinal) : -1;
     }
     return -1;
 }
@@ -102,10 +111,22 @@ function load(fileBuffer) {
                 const entryOffset = rvaToFileOffset(iltRva) + slot * 8;
                 const lo = readUint32(entryOffset), hi = readUint32(entryOffset + 4);
                 if (lo === 0 && hi === 0) break;
-                if (hi & 0x80000000) throw new Error('import por ordinal nao suportado');
-                const functionName = readCString(rvaToFileOffset(lo) + 2); // pula o hint
-                const apiId = resolveImport(dllName, functionName);
-                if (apiId < 0) throw new Error('API nao suportada: ' + dllName + '!' + functionName);
+                let apiId;
+                let functionLabel;
+                if (hi & 0x80000000) {
+                    // import por ordinal: bits baixos = numero do ordinal
+                    const ordinal = lo & 0xFFFF;
+                    apiId = resolveOrdinal(dllName, ordinal);
+                    if (apiId < 0)
+                        throw new Error('API nao suportada: ' + dllName +
+                                        ' ordinal #' + ordinal);
+                    functionLabel = 'ordinal #' + ordinal;
+                } else {
+                    const functionName = readCString(rvaToFileOffset(lo) + 2); // pula o hint
+                    apiId = resolveImport(dllName, functionName);
+                    if (apiId < 0) throw new Error('API nao suportada: ' + dllName + '!' + functionName);
+                    functionLabel = functionName;
+                }
                 if (apiId >= os.getWin32ThunkCount())
                     throw new Error('apiId ' + apiId + ' alem da tabela de trampolins (' +
                                     os.getWin32ThunkCount() + ') — aumente MAX_WIN32 no asm');
@@ -113,7 +134,7 @@ function load(fileBuffer) {
                 const iatAddress = imageBase + iatRva + slot * 8;
                 os.writePhysical32(iatAddress, thunkAddress >>> 0);
                 os.writePhysical32(iatAddress + 4, Math.floor(thunkAddress / 0x100000000));
-                os.debugPrint('[pe]   ' + functionName + ' -> api #' + apiId);
+                os.debugPrint('[pe]   ' + functionLabel + ' -> api #' + apiId);
                 slot++;
             }
             descriptor += 20;

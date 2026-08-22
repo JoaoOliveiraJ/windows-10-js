@@ -25,7 +25,8 @@ function firstStackLocation(irpAddress, stackCount) {
 // constroi um IRP em `address` (area zerada pelo caller) pronto para o
 // primeiro IofCallDriver: CL/CSL ainda apontam ACIMA do topo.
 function build(address, { major, minor, buffer, bufferLength, deviceObject,
-                          power, ioctl, stackCount, fileObject }) {
+                          power, ioctl, stackCount, fileObject, byteOffset,
+                          userEvent, userIosb, userBuffer }) {
     const count = Math.max(1, stackCount || 1);
     for (let i = 0; i < sizeFor(count); i += 4)
         GuestMemory.writeGuest32(address + i, 0);
@@ -37,13 +38,16 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject,
     GuestMemory.writeGuest8(address + IRP.CURRENT_LOCATION, count + 1);
     GuestMemory.writeGuest64(address + IRP.CURRENT_STACK_LOCATION,
                              firstStackLocation(address, count) + SL.SIZE);
+    if (userEvent) GuestMemory.writeGuest64(address + IRP.USER_EVENT, userEvent);
+    if (userIosb) GuestMemory.writeGuest64(address + IRP.USER_IOSB, userIosb);
+    if (userBuffer) GuestMemory.writeGuest64(address + IRP.USER_BUFFER, userBuffer);
 
     // preenche o slot do topo (o primeiro driver a receber o IRP)
     const stack = firstStackLocation(address, count);
     GuestMemory.writeGuest8(stack + SL.MAJOR, major);
     GuestMemory.writeGuest8(stack + SL.MINOR, minor);
     GuestMemory.writeGuest32(stack + SL.READ_LENGTH, bufferLength);
-    GuestMemory.writeGuest64(stack + SL.READ_OFFSET, 0);
+    GuestMemory.writeGuest64(stack + SL.READ_OFFSET, byteOffset || 0);
     GuestMemory.writeGuest64(stack + SL.DEVICE_OBJECT, deviceObject);
     GuestMemory.writeGuest64(stack + SL.FILE_OBJECT, fileObject || 0);
 

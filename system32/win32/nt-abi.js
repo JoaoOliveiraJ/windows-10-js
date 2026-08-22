@@ -56,6 +56,10 @@ module.exports = {
         IO_STATUS_INFORMATION: 0x38,
         STACK_COUNT: 0x42,
         CURRENT_LOCATION: 0x43,
+        CANCEL: 0x44,
+        USER_IOSB: 0x48,         // Tail antes? nao: campo direto (wdm.h x64)
+        USER_EVENT: 0x50,
+        USER_BUFFER: 0x70,
         CURRENT_STACK_LOCATION: 0xB8,   // Tail.Overlay.CurrentStackLocation
         STRUCT_SIZE: 0xD0,
         STACK_LOCATION_SIZE: 0x48,
@@ -131,8 +135,20 @@ module.exports = {
     // KEVENT (wdm.h x64) / KMUTEX
     KEVENT: { SIZE: 0x18 },
     KMUTEX: { SIZE: 0x38 },
-    // KDPC (nossa ABI simplificada; o KDPC real tem filas internas do NT)
-    KDPC: { ROUTINE: 0, CONTEXT: 8, QUEUED: 16, SIZE: 24 },
+    // KDPC (wdm.h x64, sizeof 0x40 — layout oficial)
+    KDPC: {
+        TYPE: 0x00,              // DpcObject = 19 (0x13)
+        IMPORTANCE: 0x04,
+        DPC_LIST_ENTRY: 0x10,    // SingleListEntry (ligacao na fila do NT)
+        ROUTINE: 0x18,           // DeferredRoutine
+        CONTEXT: 0x20,           // DeferredContext
+        SYSARG1: 0x28,           // SystemArgument1
+        SYSARG2: 0x30,           // SystemArgument2
+        DPC_DATA: 0x38,          // nao-nulo enquanto enfileirado (como o NT)
+        SIZE: 0x40,
+        TYPE_DPC: 0x13,
+        IMPORTANCE_MEDIUM: 1,
+    },
     // KTIMER (wdm.h x64): DISPATCHER_HEADER(0x18) + DueTime + lista + Dpc
     KTIMER: {
         TYPE: 0,                 // TimerNotificationObject=8 / Sync=9
@@ -145,8 +161,18 @@ module.exports = {
         TIMER_NOTIFICATION: 8,
         TIMER_SYNCHRONIZATION: 9,
     },
-    // IO_WORKITEM (nossa ABI simplificada)
-    IO_WORKITEM: { DEVICE_OBJECT: 0, ROUTINE: 8, CONTEXT: 16, QUEUED: 24, SIZE: 32 },
+    // IO_WORKITEM (interno do NT; ReactOS documenta: WORK_QUEUE_ITEM =
+    // LIST_ENTRY + Function, depois Context/DeviceObject/Type)
+    IO_WORKITEM: {
+        LIST_FLINK: 0x00,
+        LIST_BLINK: 0x08,
+        FUNCTION: 0x10,          // WORK_QUEUE_ITEM.Function (a routine)
+        CONTEXT: 0x18,
+        DEVICE_OBJECT: 0x20,
+        TYPE: 0x28,              // CriticalWorkQueue=0 Delayed=1 HyperCritical=2
+        QUEUED: 0x2C,            // ligacao interna da fila do jsOS
+        SIZE: 0x30,
+    },
     // KEY_VALUE_PARTIAL_INFORMATION (wdm.h)
     KEY_VALUE_PARTIAL: { TITLE_INDEX: 0, TYPE: 4, DATA_LENGTH: 8, DATA: 12 },
 };

@@ -22,10 +22,15 @@ const IRP_MJ = {
     READ:           0x03,
     WRITE:          0x04,
     DEVICE_CONTROL: 0x0E,
+    INTERNAL_DEVICE_CONTROL: 0x0F,
     CLEANUP:        0x12,
     POWER:          0x16,
     PNP:            0x1B,
 };
+
+// IRP.Flags (wdm.h): buffered + buffer alocado pelo I/O manager
+const IRP_BUFFERED_IO = 0x02;
+const IRP_DEALLOCATE_BUFFER = 0x10;
 
 const STATUS = {
     SUCCESS:        0,
@@ -87,7 +92,13 @@ const IRP = NtAbi.IRP;
 function iofCallDriver(devicePointer, ioRequestPointer) {
     const currentLocation = GuestMemory.readGuest8(ioRequestPointer + IRP.CURRENT_LOCATION);
     const stackCount = GuestMemory.readGuest8(ioRequestPointer + IRP.STACK_COUNT);
-    if (currentLocation <= 1) return STATUS.NOT_SUPPORTED;  // estourou a pilha
+    if (currentLocation <= 1) {
+        os.debugPrint('[iom] pilha estourada: irp=0x' +
+                      (ioRequestPointer >>> 0).toString(16) +
+                      ' CL=' + currentLocation + ' SC=' + stackCount +
+                      ' dev=0x' + (devicePointer >>> 0).toString(16));
+        return STATUS.NOT_SUPPORTED;
+    }
     const stackPointer =
         GuestMemory.readGuest32(ioRequestPointer + IRP.CURRENT_STACK_LOCATION) - SL.SIZE;
     GuestMemory.writeGuest8(ioRequestPointer + IRP.CURRENT_LOCATION,
@@ -146,7 +157,95 @@ function iofCompleteRequest(ioRequestPointer) {
         currentLocation++;
         currentStackPointer += SL.SIZE;
     }
+
+    // finalizacao de IRP sincrono (NT): IoStatus -> UserIosb, SystemBuffer ->
+    // UserBuffer (buffered I/O), UserEvent sinalizado
+    const finalStatus = IrpBuilder.readIoStatus(ioRequestPointer);
+    const userIosb = GuestMemory.readGuest64(ioRequestPointer + IRP.USER_IOSB);
+    if (userIosb) {
+        GuestMemory.writeGuest32(userIosb + NtAbi.IO_STATUS_BLOCK.STATUS,
+                                 finalStatus.status >>> 0);
+        GuestMemory.writeGuest64(userIosb + NtAbi.IO_STATUS_BLOCK.INFORMATION,
+                                 finalStatus.information);
+    }
+    const userBuffer = GuestMemory.readGuest64(ioRequestPointer + IRP.USER_BUFFER);
+    const systemBuffer = GuestMemory.readGuest64(ioRequestPointer + IRP.SYSTEM_BUFFER);
+    if (userBuffer && systemBuffer && finalStatus.status >= 0 &&
+        finalStatus.information > 0) {
+        for (let i = 0; i < finalStatus.information; i++)
+            GuestMemory.writeGuest8(userBuffer + i,
+                                    GuestMemory.readGuest8(systemBuffer + i));
+    }
+    const userEvent = GuestMemory.readGuest64(ioRequestPointer + IRP.USER_EVENT);
+    if (userEvent) require('ntos/ke/dispatcher').setEvent(userEvent);
+    // IRP_BUFFERED_IO + DEALLOCATE_BUFFER: o SystemBuffer e' do I/O manager
+    if (GuestMemory.readGuest32(ioRequestPointer + IRP.FLAGS) & IRP_DEALLOCATE_BUFFER) {
+        if (systemBuffer) GuestMemory.guestFreeBytes(systemBuffer);
+        GuestMemory.writeGuest64(ioRequestPointer + IRP.SYSTEM_BUFFER, 0);
+    }
     return 0;
+}
+
+// ---- IRPs sincronos construidos por drivers (IoBuild*) ----------------------
+
+// IoBuildSynchronousFsdRequest(major, device, buffer, length, offsetPtr,
+//                              event, ioStatusBlock) -> IRP
+// O buffer ja e' memoria de kernel: SystemBuffer aponta direto p/ ele.
+function buildSynchronousFsdRequest(major, devicePointer, bufferPointer, length,
+                                    byteOffsetPointer, eventPointer,
+                                    ioStatusPointer) {
+    const stackCount = GuestMemory.readGuest8(devicePointer +
+                                              NtAbi.DEVICE_OBJECT.STACK_SIZE) || 1;
+    const byteOffset = byteOffsetPointer
+        ? GuestMemory.readGuest64(byteOffsetPointer) : 0;
+    const irpAddress = GuestMemory.guestAllocBytes(IrpBuilder.sizeFor(stackCount));
+    IrpBuilder.build(irpAddress, {
+        major,
+        minor: 0,
+        buffer: bufferPointer,
+        bufferLength: length >>> 0,
+        deviceObject: devicePointer,
+        stackCount,
+        byteOffset,
+        userEvent: eventPointer,
+        userIosb: ioStatusPointer,
+    });
+    return irpAddress;
+}
+
+// IoBuildDeviceIoControlRequest(code, device, inBuf, inLen, outBuf, outLen,
+//                               internal, event, ioStatusBlock) -> IRP
+// METHOD_BUFFERED de verdade: input copiado p/ SystemBuffer na construcao;
+// SystemBuffer -> OutputBuffer na conclusao (ver iofCompleteRequest).
+function buildDeviceIoControlRequest(ioctlCode, devicePointer, inputBuffer,
+                                     inputLength, outputBuffer, outputLength,
+                                     internal, eventPointer, ioStatusPointer) {
+    // internal e' BOOLEAN: o compilador grava so 1 byte no slot de 8 — ler so o byte
+    const isInternal = (internal & 0xFF) !== 0;
+    const stackCount = GuestMemory.readGuest8(devicePointer +
+                                              NtAbi.DEVICE_OBJECT.STACK_SIZE) || 1;
+    const systemBufferSize = Math.max(inputLength >>> 0, outputLength >>> 0, 1);
+    const systemBuffer = GuestMemory.guestAllocBytes(systemBufferSize);
+    if (inputBuffer)
+        for (let i = 0; i < (inputLength >>> 0); i++)
+            GuestMemory.writeGuest8(systemBuffer + i,
+                                    GuestMemory.readGuest8(inputBuffer + i));
+    const irpAddress = GuestMemory.guestAllocBytes(IrpBuilder.sizeFor(stackCount));
+    IrpBuilder.build(irpAddress, {
+        major: isInternal ? IRP_MJ.INTERNAL_DEVICE_CONTROL : IRP_MJ.DEVICE_CONTROL,
+        minor: 0,
+        buffer: systemBuffer,
+        bufferLength: outputLength >>> 0,
+        deviceObject: devicePointer,
+        stackCount,
+        ioctl: { code: ioctlCode >>> 0, inputLength: inputLength >>> 0 },
+        userEvent: eventPointer,
+        userIosb: ioStatusPointer,
+        userBuffer: outputBuffer,
+    });
+    GuestMemory.writeGuest32(irpAddress + IRP.FLAGS,
+                             IRP_BUFFERED_IO | IRP_DEALLOCATE_BUFFER);
+    return irpAddress;
 }
 
 // cria um FILE_OBJECT real apontando para o device (um por handle aberto;
@@ -386,4 +485,5 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    openDevice, closeDevice, readHandle, writeHandle,
                    pnpStartDevice, setDevicePowerState, queryDevicePowerState,
                    getDevicePowerState, dispatchNativePowerIrp,
-                   iofCallDriver, iofCompleteRequest };
+                   iofCallDriver, iofCompleteRequest,
+                   buildSynchronousFsdRequest, buildDeviceIoControlRequest };
