@@ -8,6 +8,7 @@
 const Irql = require('ntos/ke/irql');
 const KeDpc = require('ntos/ke/dpc');
 const KeTimer = require('ntos/ke/timer');
+const Dispatcher = require('ntos/ke/dispatcher');
 const Clock = require('ntos/ke/clock');
 const Smp = require('ntos/ke/smp');
 const NtAbi = require('win32/nt-abi');
@@ -60,6 +61,15 @@ module.exports = {
         'KeCancelTimer',                   // (ktimerPtr) -> estava na fila
         'KeReadStateTimer',                // (ktimerPtr) -> SignalState
         'KeDelayExecutionThread',          // (mode, alertable, intervalPtr)
+        'KeInitializeEvent',               // (eventPtr, type, initialState)
+        'KeSetEvent',                      // (eventPtr, boost, wait) -> anterior
+        'KeClearEvent',                    // (eventPtr)
+        'KeResetEvent',                    // (eventPtr) -> anterior
+        'KeReadStateEvent',                // (eventPtr) -> SignalState
+        'KeInitializeMutex',               // (mutexPtr, level)
+        'KeReleaseMutex',                  // (mutexPtr, wait)
+        'KeWaitForSingleObject',           // (objPtr, reason, mode, alertable, timeoutPtr)
+        'KeWaitForMultipleObjects',        // (count, objsPtr, waitType, reason, mode, alertable, timeoutPtr)
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -170,5 +180,35 @@ module.exports = {
         // KeDelayExecutionThread(mode, alertable, intervalPtr)
         (_waitMode, _alertable, intervalPointer) =>
             KeTimer.delayExecutionThread(intervalPointer),
+        // KeInitializeEvent(eventPtr, type, initialState)
+        (eventPointer, eventType, initialState) => {
+            Dispatcher.initializeEvent(eventPointer, eventType >>> 0,
+                                       initialState >>> 0);
+            return 0;
+        },
+        // KeSetEvent(eventPtr, boost, wait) -> SignalState anterior
+        (eventPointer, _boost, _wait) => Dispatcher.setEvent(eventPointer),
+        // KeClearEvent(eventPtr)
+        (eventPointer) => { Dispatcher.clearEvent(eventPointer); return 0; },
+        // KeResetEvent(eventPtr) -> SignalState anterior
+        (eventPointer) => Dispatcher.resetEvent(eventPointer),
+        // KeReadStateEvent(eventPtr) -> SignalState
+        (eventPointer) => Dispatcher.readState(eventPointer),
+        // KeInitializeMutex(mutexPtr, level)
+        (mutexPointer, level) => {
+            Dispatcher.initializeMutex(mutexPointer, level >>> 0);
+            return 0;
+        },
+        // KeReleaseMutex(mutexPtr, wait)
+        (mutexPointer, _wait) => Dispatcher.releaseMutex(mutexPointer),
+        // KeWaitForSingleObject(objPtr, reason, mode, alertable, timeoutPtr)
+        (objectPointer, _reason, _waitMode, _alertable, timeoutPointer) =>
+            Dispatcher.waitForSingleObject(objectPointer, timeoutPointer),
+        // KeWaitForMultipleObjects(count, objsPtr, waitType, reason, mode,
+        //                          alertable, timeoutPtr)
+        (count, objectsPointer, waitType, _reason, _waitMode, _alertable,
+         timeoutPointer) =>
+            Dispatcher.waitForMultipleObjects(count >>> 0, objectsPointer,
+                                              waitType >>> 0, timeoutPointer),
     ],
 };

@@ -277,6 +277,20 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\KTimer'), 'ktimer device criado');
     checkNativeDriver('\\Device\\KTimer', 'ktimer-ok');
 
+    // grupo 15: dispatcher — KEVENT/KMUTEX/waits; thread worker acordada por
+    // evento sinalizado por um DPC de timer (cenario classico de driver)
+    Ntoskrnl.loadDriver('/event.sys');
+    assert(ObjectManager.lookup('\\Device\\Event'), 'event device criado');
+    {
+        const KernelClock = require('ntos/ke/clock');
+        const wakeDeadline = KernelClock.uptimeMs() + 80;
+        while (KernelClock.uptimeMs() < wakeDeadline) {
+            Ntoskrnl.runKernelTasks();
+            Scheduler.tick();
+        }
+    }
+    checkNativeDriver('\\Device\\Event', 'event-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

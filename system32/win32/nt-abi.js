@@ -115,6 +115,20 @@ module.exports = {
     },
     // UNICODE_STRING / ANSI_STRING (wdm.h)
     UNICODE_STRING: { LENGTH: 0, MAXIMUM_LENGTH: 2, BUFFER: 8, SIZE: 0x10 },
+    // DISPATCHER_HEADER (wdm.h x64) — base de KEVENT/KMUTEX/KTIMER
+    DISPATCHER_HEADER: {
+        TYPE: 0,
+        SIGNAL_STATE: 4,         // i32
+        WAIT_LIST_HEAD: 8,
+        SIZE: 0x18,
+        TYPE_EVENT_NOTIFICATION: 0,
+        TYPE_EVENT_SYNCHRONIZATION: 1,
+        TYPE_MUTANT: 2,
+        MUTEX_OWNER: 0x18,       // KMUTEX: OwnerThread (nosso slot)
+    },
+    // KEVENT (wdm.h x64) / KMUTEX
+    KEVENT: { SIZE: 0x18 },
+    KMUTEX: { SIZE: 0x38 },
     // KDPC (nossa ABI simplificada; o KDPC real tem filas internas do NT)
     KDPC: { ROUTINE: 0, CONTEXT: 8, QUEUED: 16, SIZE: 24 },
     // KTIMER (wdm.h x64): DISPATCHER_HEADER(0x18) + DueTime + lista + Dpc
