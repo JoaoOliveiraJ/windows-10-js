@@ -41,6 +41,11 @@ module.exports = {
         'memmove',
         'RtlUnicodeStringToInteger',
         'RtlIntegerToUnicodeString',
+        'RtlZeroMemory',
+        'RtlFillMemory',
+        'RtlCopyMemory',
+        'RtlMoveMemory',
+        'RtlCompareMemory',
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
@@ -212,6 +217,43 @@ module.exports = {
             GuestMemory.writeGuest16(buffer + text.length * 2, 0);
             GuestMemory.writeGuest16(unicodePointer, text.length * 2);
             return 0;
+        },
+        // RtlZeroMemory(dst, length)
+        (destPointer, length) => {
+            for (let i = 0; i < length; i++)
+                GuestMemory.writeGuest8(destPointer + i, 0);
+            return 0;
+        },
+        // RtlFillMemory(dst, length, fillByte)
+        (destPointer, length, fillByte) => {
+            for (let i = 0; i < length; i++)
+                GuestMemory.writeGuest8(destPointer + i, fillByte & 0xFF);
+            return 0;
+        },
+        // RtlCopyMemory(dst, src, length) — regioes nao sobrepostas
+        (destPointer, srcPointer, length) => {
+            for (let i = 0; i < length; i++)
+                GuestMemory.writeGuest8(destPointer + i,
+                                        GuestMemory.readGuest8(srcPointer + i));
+            return 0;
+        },
+        // RtlMoveMemory(dst, src, length) — seguro com sobreposicao
+        (destPointer, srcPointer, length) => {
+            const tmp = [];
+            for (let i = 0; i < length; i++)
+                tmp.push(GuestMemory.readGuest8(srcPointer + i));
+            for (let i = 0; i < length; i++)
+                GuestMemory.writeGuest8(destPointer + i, tmp[i]);
+            return 0;
+        },
+        // RtlCompareMemory(a, b, length) -> bytes iguais do inicio
+        (pointerA, pointerB, length) => {
+            let equal = 0;
+            while (equal < length &&
+                   GuestMemory.readGuest8(pointerA + equal) ===
+                   GuestMemory.readGuest8(pointerB + equal))
+                equal++;
+            return equal;
         },
     ],
 };

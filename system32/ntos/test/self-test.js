@@ -352,6 +352,11 @@ function run() {
     for (let i = 0; i < 10; i++) { Ntoskrnl.runKernelTasks(); Scheduler.tick(); }
     checkNativeDriver('\\Device\\FastRes', 'fastres-ok');
 
+    // grupo 21: ERESOURCE (reader/writer), rundown protection, RTL memoria
+    Ntoskrnl.loadDriver('/locks.sys');
+    assert(ObjectManager.lookup('\\Device\\Locks'), 'locks device criado');
+    checkNativeDriver('\\Device\\Locks', 'locks-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

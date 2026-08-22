@@ -4,6 +4,7 @@
 
 const GuestMemory = require('win32/guest-memory');
 const FastMutex = require('ntos/ke/fast-mutex');
+const Resource = require('ntos/ex/resource');
 
 module.exports = {
     names: [
@@ -18,6 +19,18 @@ module.exports = {
         'ExAcquireFastMutex',
         'ExTryToAcquireFastMutex',
         'ExReleaseFastMutex',
+        'ExInitializeResourceLite',
+        'ExAcquireResourceExclusiveLite',
+        'ExAcquireResourceSharedLite',
+        'ExReleaseResourceLite',
+        'ExIsResourceAcquiredExclusiveLite',
+        'ExIsResourceAcquiredSharedLite',
+        'ExConvertExclusiveToSharedLite',
+        'ExDeleteResourceLite',
+        'ExInitializeRundownProtection',
+        'ExAcquireRundownProtection',
+        'ExReleaseRundownProtection',
+        'ExRundownCompleted',
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -47,5 +60,37 @@ module.exports = {
         (fastMutexPointer) => FastMutex.tryAcquire(fastMutexPointer),
         // ExReleaseFastMutex(fastMutexPtr)
         (fastMutexPointer) => { FastMutex.release(fastMutexPointer); return 0; },
+        // ERESOURCE (reader/writer lock — ntos/ex/resource.js)
+        (resourcePointer) => Resource.initialize(resourcePointer),
+        (resourcePointer, wait) => Resource.acquireExclusive(resourcePointer, wait),
+        (resourcePointer, wait) => Resource.acquireShared(resourcePointer, wait),
+        (resourcePointer) => Resource.release(resourcePointer),
+        (resourcePointer) => Resource.isAcquiredExclusive(resourcePointer),
+        (resourcePointer) => Resource.isAcquiredShared(resourcePointer),
+        (resourcePointer) => Resource.convertExclusiveToShared(resourcePointer),
+        (resourcePointer) => Resource.deleteResource(resourcePointer),
+        // RUNDOWN_REFERENCE: Count real do NT — bit 0 = rundown ativo,
+        // referencias nos bits acima (<<1)
+        (rundownPointer) => {   // ExInitializeRundownProtection
+            GuestMemory.writeGuest32(rundownPointer, 0);
+            GuestMemory.writeGuest32(rundownPointer + 4, 0);
+            return 0;
+        },
+        (rundownPointer) => {   // ExAcquireRundownProtection -> BOOLEAN
+            const count = GuestMemory.readGuest32(rundownPointer) >>> 0;
+            if (count & 1) return 0;            // rundown ativo: recusa
+            GuestMemory.writeGuest32(rundownPointer, (count + 2) >>> 0);
+            return 1;
+        },
+        (rundownPointer) => {   // ExReleaseRundownProtection
+            const count = GuestMemory.readGuest32(rundownPointer) >>> 0;
+            GuestMemory.writeGuest32(rundownPointer, (count - 2) >>> 0);
+            return 0;
+        },
+        (rundownPointer) => {   // ExRundownCompleted: liga o bit de rundown
+            const count = GuestMemory.readGuest32(rundownPointer) >>> 0;
+            GuestMemory.writeGuest32(rundownPointer, (count | 1) >>> 0);
+            return 0;
+        },
     ],
 };
