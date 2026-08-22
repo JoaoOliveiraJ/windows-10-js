@@ -12,6 +12,8 @@ module.exports = {
         'PsTerminateSystemThread',
         'PsGetCurrentThreadId',     // () -> KTHREAD.Cid.UniqueThread (caminho do NT)
         'PsGetCurrentProcessId',    // () -> KTHREAD.Cid.UniqueProcess (idem)
+        'PsSetCreateProcessNotifyRoutine',      // (callbackPtr, remove)
+        'PsRemoveCreateProcessNotifyRoutine',   // (callbackPtr)
     ],
     handlers: [
         // PsCreateSystemThread(outHandlePtr, access, objAttrs, procHandle,
@@ -28,5 +30,17 @@ module.exports = {
         () => Process.getCurrentThreadId(),
         // PsGetCurrentProcessId(): thread corrente -> Cid.UniqueProcess
         () => Process.getCurrentProcessId(),
+        // PsSetCreateProcessNotifyRoutine(callbackPtr, remove=FALSE) — registra
+        (callbackPointer, remove) => {
+            if (remove & 0xFF)
+                return Process.unregisterProcessNotify(callbackPointer)
+                    ? 0 : 0xC000007A | 0;   // STATUS_PROCEDURE_NOT_FOUND
+            Process.registerProcessNotify(callbackPointer);
+            return 0;
+        },
+        // PsRemoveCreateProcessNotifyRoutine(callbackPtr)
+        (callbackPointer) =>
+            Process.unregisterProcessNotify(callbackPointer)
+                ? 0 : 0xC000007A | 0,
     ],
 };

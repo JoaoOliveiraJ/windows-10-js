@@ -28,6 +28,26 @@ let psActiveProcessHead = 0;          // sentinel da LIST_ENTRY global
 let systemProcessPointer = 0;
 let currentThreadPointer = 0;         // o "gs:[0x188]" do jsOS
 
+// CREATE_PROCESS_NOTIFY routines registradas por drivers (PsSetCreate*):
+// void callback(HANDLE parentPid, HANDLE pid, BOOLEAN created)
+const processNotifyRoutines = [];
+
+function registerProcessNotify(callbackPointer) {
+    processNotifyRoutines.push(callbackPointer >>> 0);
+}
+function unregisterProcessNotify(callbackPointer) {
+    const index = processNotifyRoutines.indexOf(callbackPointer >>> 0);
+    if (index >= 0) processNotifyRoutines.splice(index, 1);
+    return index >= 0;
+}
+
+// dispara as notificacoes (parent = processo corrente, como o NT)
+function fireProcessNotify(processId, created) {
+    const parentPid = getCurrentProcessId();
+    for (const callbackPointer of processNotifyRoutines)
+        os.execMsAbi(callbackPointer, parentPid, processId, created ? 1 : 0);
+}
+
 function read64(address) { return GuestMemory.readGuest64(address); }
 function write64(address, value) { GuestMemory.writeGuest64(address, value); }
 function write32(address, value) { GuestMemory.writeGuest32(address, value >>> 0); }
@@ -65,6 +85,7 @@ function createProcess(processId, imageName) {
         GuestMemory.writeGuest8(processPointer + EPROCESS.IMAGE_FILE_NAME + i,
                                 i < shortName.length ? shortName.charCodeAt(i) : 0);
     insertIntoActiveProcessList(processPointer);
+    fireProcessNotify(processId, true);    // PsSetCreateProcessNotifyRoutine
     return processPointer;
 }
 
@@ -79,6 +100,8 @@ function createKernelThread(processPointer, threadId) {
 }
 
 function terminateProcess(processPointer) {
+    const processId = read64(processPointer + EPROCESS.UNIQUE_PROCESS_ID);
+    fireProcessNotify(processId, false);   // notificacao de saida (Create=FALSE)
     write32(processPointer + EPROCESS.ACTIVE_THREADS, 0);
     write64(processPointer + EPROCESS.EXIT_TIME, Math.floor(Clock.uptimeMs()));
     removeFromActiveProcessList(processPointer);
@@ -149,5 +172,6 @@ module.exports = { init, createProcess, createKernelThread, terminateProcess,
                    addThread, removeThread,
                    setCurrentThread, getCurrentThread, getCurrentProcess,
                    getCurrentProcessId, getCurrentThreadId, listActiveProcesses,
+                   registerProcessNotify, unregisterProcessNotify,
                    getSystemProcess: () => systemProcessPointer,
                    SYSTEM_PROCESS_ID };

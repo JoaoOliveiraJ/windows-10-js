@@ -415,6 +415,16 @@ function run() {
     for (let i = 0; i < 10; i++) { Ntoskrnl.runKernelTasks(); Scheduler.tick(); }
     checkNativeDriver('\\Device\\OpenX', 'openx-ok');
 
+    // grupo 29: notificacao de processo (PsSetCreateProcessNotifyRoutine
+    // disparando em create+exit de verdade), IoGetDeviceProperty via PCI,
+    // IoGetRelatedDeviceObject pela pilha
+    Ntoskrnl.loadDriver('/notify.sys');
+    assert(ObjectManager.lookup('\\Device\\Notify'), 'notify device criado');
+    Scheduler.spawn('notify-probe', function* () { yield; });
+    Scheduler.tick();   // cria (notifica) e roda
+    Scheduler.tick();   // termina -> reap -> notifica a saida
+    checkNativeDriver('\\Device\\Notify', 'notify-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

@@ -39,6 +39,9 @@ const formatGuestText = GuestStrings.formatGuestText;
 // contador de regiao critica (KeEnter/LeaveCriticalRegion)
 let criticalRegionCount = 0;
 
+// registros de bugcheck callback (KeRegisterBugCheckCallback)
+const bugCheckCallbacks = [];
+
 module.exports = {
     names: [
         'DbgPrint',
@@ -87,6 +90,8 @@ module.exports = {
         'KeEnterCriticalRegion',           // contador de regiao critica real
         'KeLeaveCriticalRegion',
         'KeAreApcsDisabled',
+        'KeRegisterBugCheckCallback',      // (callbackPtr, context, componentPtr, len, statePtr)
+        'KeDeregisterBugCheckCallback',
     ],
     handlers: [
         // DbgPrint(formatPtr, args...): printf real do kernel — formata
@@ -258,8 +263,8 @@ module.exports = {
             while (os.rdtsc() - start < ticksToStall) { /* stall real */ }
             return 0;
         },
-        // KeBugCheckEx(code, p1, p2, p3, p4): parada fatal — como o NT, para
-        // a maquina imediatamente (nao retorna)
+        // KeBugCheckEx(code, p1, p2, p3, p4): parada fatal — roda os bugcheck
+        // callbacks registrados (como o NT) e para a maquina (nao retorna)
         (bugCheckCode, param1, param2, param3, param4) => {
             os.debugPrint('');
             os.debugPrint('*** STOP (KeBugCheckEx): 0x' +
@@ -268,6 +273,10 @@ module.exports = {
                           (param2 >>> 0).toString(16) + ', 0x' +
                           (param3 >>> 0).toString(16) + ', 0x' +
                           (param4 >>> 0).toString(16) + ')');
+            for (const recordPointer of bugCheckCallbacks) {
+                const routine = GuestMemory.readGuest64(recordPointer);
+                if (routine) os.execMsAbi(routine, recordPointer, 0);
+            }
             os.halt();
             return 0;   // nao alcancado
         },
@@ -291,5 +300,25 @@ module.exports = {
         () => { if (criticalRegionCount > 0) criticalRegionCount--; return 0; },
         // KeAreApcsDisabled() -> 1 se dentro de regiao critica
         () => criticalRegionCount > 0 ? 1 : 0,
+        // KeRegisterBugCheckCallback(callback, context, component, len, state):
+        // registro real — os callbacks rodam no KeBugCheckEx
+        (callbackPointer, contextPointer, componentPointer, length,
+         statePointer) => {
+            const recordPointer = GuestMemory.guestAllocBytes(0x20);
+            GuestMemory.writeGuest64(recordPointer, callbackPointer);       // routine
+            GuestMemory.writeGuest64(recordPointer + 8, componentPointer);  // component
+            GuestMemory.writeGuest64(recordPointer + 16, contextPointer);   // context
+            bugCheckCallbacks.push(recordPointer);
+            if (statePointer) GuestMemory.writeGuest32(statePointer, 1);
+            return 1;   // BOOLEAN sucesso
+        },
+        // KeDeregisterBugCheckCallback(recordPtr)
+        (recordPointer) => {
+            const index = bugCheckCallbacks.indexOf(recordPointer >>> 0);
+            if (index < 0) return 0;
+            bugCheckCallbacks.splice(index, 1);
+            GuestMemory.guestFreeBytes(recordPointer);
+            return 1;
+        },
     ],
 };

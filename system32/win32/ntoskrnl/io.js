@@ -16,12 +16,17 @@ const IoTimer = require('ntos/io/io-timer');
 const KernelThreads = require('ntos/ps/kernel-threads');
 const Process = require('ntos/ps/process');
 const Zw = require('win32/ntoskrnl/zw');
+const PciBus = require('drivers/bus/pci');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
 // extensoes de driver object (IoAllocate/GetDriverObjectExtension):
 // chave "driverObject:tag" -> bloco de dados do driver
 const driverExtensions = new Map();
+
+// mapa FDO -> PDO registrado no attach (para IoGetDeviceProperty achar o
+// PDO de hardware de qualquer ponto da pilha)
+const pdoOfAttachedDevice = new Map();
 
 // cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver.
 // A DeviceExtension (se pedida) fica logo apos o DEVICE_OBJECT, como o NT faz.
@@ -103,6 +108,7 @@ function attachDeviceToDeviceStack(sourcePointer, targetPointer) {
     GuestMemory.writeGuest64(topPointer + DEVICE.ATTACHED_DEVICE, sourcePointer);
     const targetStackSize = GuestMemory.readGuest8(topPointer + DEVICE.STACK_SIZE) || 1;
     GuestMemory.writeGuest8(sourcePointer + DEVICE.STACK_SIZE, targetStackSize + 1);
+    pdoOfAttachedDevice.set(sourcePointer >>> 0, targetPointer >>> 0);
 
     const driverRoot = ObjectManager.lookup('\\Device');
     if (driverRoot && driverRoot.children) {
@@ -188,6 +194,8 @@ module.exports = {
         'IoGetDriverObjectExtension',        // (drvObj, tag) -> extPtr
         'IoGetCurrentProcess',               // () -> thread corrente -> ApcState.Process
         'IoCreateFile',                      // 14 args (abertura completa por nome)
+        'IoGetRelatedDeviceObject',          // (fileObjectPtr) -> topo da pilha
+        'IoGetDeviceProperty',               // (dev, prop, bufLen, outBuf, outLen)
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -384,5 +392,47 @@ module.exports = {
                 outHandlePointer, desiredAccess, objectAttributesPointer,
                 ioStatusPointer, allocationSize, fileAttributes, shareAccess,
                 createDisposition, createOptions, eaBuffer, eaLength),
+        // IoGetRelatedDeviceObject(fileObjectPtr): FileObject->DeviceObject e
+        // sobe a cadeia AttachedDevice ate o topo (como o NT)
+        (fileObjectPointer) => {
+            let devicePointer = GuestMemory.readGuest32(fileObjectPointer +
+                NtAbi.FILE_OBJECT.DEVICE_OBJECT);
+            for (;;) {
+                const attached = GuestMemory.readGuest32(devicePointer +
+                    NtAbi.DEVICE_OBJECT.ATTACHED_DEVICE);
+                if (!attached) break;
+                devicePointer = attached;
+            }
+            return devicePointer;
+        },
+        // IoGetDeviceProperty(devObj, property, outBuf, bufSize, outLenPtr)
+        // DevicePropertyHardwareID=1: o id do PDO PCI (string wide) — a
+        // assinatura real e' (devObj, property, bufferLength, outBuf, outLen)
+        (devicePointer, property, bufferSize, outBufferPointer,
+         outLengthPointer) => {
+            if ((property >>> 0) !== 1) return 0xC000000D | 0;
+            // NT: a property de hardware mora no PDO — segue a cadeia de
+            // attach ate achar o PDO PCI correspondente
+            let candidate = devicePointer >>> 0;
+            let pciFunction = PciBus.devices.find(pfn =>
+                pfn.node && pfn.node.data.nativeDevicePointer === candidate);
+            while (!pciFunction && pdoOfAttachedDevice.has(candidate)) {
+                candidate = pdoOfAttachedDevice.get(candidate);
+                pciFunction = PciBus.devices.find(pfn =>
+                    pfn.node && pfn.node.data.nativeDevicePointer === candidate);
+            }
+            if (!pciFunction) return 0xC0000034 | 0;   // nao e' pilha PCI
+            const id = PciBus.hardwareIdOf(pciFunction);
+            const needed = (id.length + 2) * 2;
+            if (bufferSize < needed) {
+                GuestMemory.writeGuest32(outLengthPointer, needed);
+                return 0xC0000023 | 0;   // STATUS_BUFFER_TOO_SMALL
+            }
+            for (let i = 0; i < id.length; i++)
+                GuestMemory.writeGuest16(outBufferPointer + i * 2,
+                                         id.charCodeAt(i));
+            GuestMemory.writeGuest32(outLengthPointer, needed);
+            return 0;
+        },
     ],
 };
