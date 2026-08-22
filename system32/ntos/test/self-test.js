@@ -358,7 +358,10 @@ function run() {
     checkNativeDriver('\\Device\\Locks', 'locks-ok');
 
     // grupo 22: PCI bus driver + PnP real — o VGA PCI foi enumerado, o
-    // gerenciador PnP casou o HardwareId e chamou o AddDevice do driver
+    // gerenciador PnP casou o HardwareId (via QUERY_ID ao bus driver) e
+    // chamou o AddDevice do driver com o PDO
+    assert(IoManager.queryDeviceId('\\Device\\PDO4', 0) === 'PCI\\VEN_1234&DEV_1111',
+           'bus driver respondeu QUERY_ID do VGA');
     assert(ObjectManager.lookup('\\Device\\PciDemo'),
            'AddDevice do pcidemo criou o FDO via PnP');
     checkNativeDriver('\\Device\\PciDemo', 'pcidemo-ok');

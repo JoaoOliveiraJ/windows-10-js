@@ -50,9 +50,10 @@ function insertQueueDpc(dpcPointer, sysArg1, sysArg2) {
 }
 
 function removeQueueDpc(dpcPointer) {
-    const i = dpcQueue.findIndex(e => e.dpcPointer === dpcPointer);
-    if (i < 0) return 0;
-    dpcQueue.splice(i, 1);
+    const queueIndex = dpcQueue.findIndex(queuedEntry =>
+        queuedEntry.dpcPointer === dpcPointer);
+    if (queueIndex < 0) return 0;
+    dpcQueue.splice(queueIndex, 1);
     writeField(dpcPointer, KDPC.DPC_DATA, 0);
     return 1;
 }

@@ -10,6 +10,7 @@
 const ObjectManager = require('ntos/ob/object-manager');
 const GuestMemory = require('win32/guest-memory');
 const NtAbi = require('win32/nt-abi');
+const IoManager = require('ntos/io/io-manager');
 
 const CONFIG_ADDRESS = 0xCF8;
 const CONFIG_DATA = 0xCFC;
@@ -68,7 +69,60 @@ function buildResourceList(resources) {
     return address;
 }
 
-// ---- enumeracao ------------------------------------------------------------
+// ---- bus driver (estilo pci.sys): responde o PNP dos PDOs ------------------
+
+function hex4(value) { return value.toString(16).padStart(4, '0').toUpperCase(); }
+
+function hardwareIdOf(entry) {
+    return 'PCI\\VEN_' + hex4(entry.vendorId) + '&DEV_' + hex4(entry.deviceId);
+}
+
+// dispatch JS (IRP do I/O manager, sem IRP de convidado) — usado antes de um
+// driver funcional anexar no PDO
+function pdoPnpDispatchJs(device, ioRequest) {
+    switch (ioRequest.minor) {
+    case IoManager.IRP_MN.START_DEVICE:
+    case IoManager.IRP_MN.REMOVE_DEVICE:
+        ioRequest.status = IoManager.STATUS.SUCCESS;
+        return;
+    case IoManager.IRP_MN.QUERY_ID:
+        ioRequest.result = hardwareIdOf(device.data.pci);
+        ioRequest.status = IoManager.STATUS.SUCCESS;
+        return;
+    default:
+        ioRequest.status = IoManager.STATUS.NOT_SUPPORTED;
+    }
+}
+
+// resposta nativa: o FDO desceu (IoCallDriver) ate o PDO — o bus driver
+// responde escrevendo no IRP do convidado e completando (como o pci.sys)
+function answerNativePnpIrp(devicePointer, irpPointer) {
+    const entry = devices.find(pciFunction => pciFunction.node &&
+        pciFunction.node.data.nativeDevicePointer === devicePointer);
+    if (!entry) return null;   // nao e' PDO nosso
+    const stackPointer = GuestMemory.readGuest32(irpPointer +
+                                                 NtAbi.IRP.CURRENT_STACK_LOCATION);
+    const minor = GuestMemory.readGuest8(stackPointer + NtAbi.IO_STACK_LOCATION.MINOR);
+    let information = 0;
+    if (minor === IoManager.IRP_MN.START_DEVICE ||
+        minor === IoManager.IRP_MN.REMOVE_DEVICE) {
+        information = 0;
+    } else if (minor === IoManager.IRP_MN.QUERY_ID) {
+        // id em pool (UTF-16, duplo NUL — o pool ja vem zerado)
+        const id = hardwareIdOf(entry);
+        const buffer = GuestMemory.guestAllocBytes((id.length + 2) * 2);
+        for (let i = 0; i < id.length; i++)
+            GuestMemory.writeGuest16(buffer + i * 2, id.charCodeAt(i));
+        information = buffer;
+    } else {
+        return 0xC00000BB | 0;   // STATUS_NOT_SUPPORTED (nao completa)
+    }
+    GuestMemory.writeGuest32(irpPointer + NtAbi.IRP.IO_STATUS, 0);
+    GuestMemory.writeGuest64(irpPointer + NtAbi.IRP.IO_STATUS_INFORMATION,
+                             information);
+    IoManager.iofCompleteRequest(irpPointer);
+    return 0;
+}
 const devices = [];   // { bus, device, func, vendorId, deviceId, classCode,
                       //   subClass, progIf, irqLine, bars[], node, resourceListPtr }
 
@@ -130,9 +184,13 @@ function resourcesOf(entry) {
 }
 
 // cria os PDOs no namespace com o CM_RESOURCE_LIST pronto — cada PDO tem um
-// DEVICE_OBJECT nativo (DriverObject = 0 ate um driver funcional anexar)
+// DEVICE_OBJECT nativo (DriverObject = 0 ate um driver funcional anexar) e
+// aponta p/ o bus driver JS (responde PNP quando nao ha pilha nativa)
 function createPdos() {
     const DEVICE = NtAbi.DEVICE_OBJECT;
+    const busDriverNode = IoManager.createDriver('PciBus', {
+        [IoManager.IRP_MJ.PNP]: pdoPnpDispatchJs,
+    });
     for (const entry of devices) {
         const resources = resourcesOf(entry);
         entry.resourceListPointer = buildResourceList(resources);
@@ -144,6 +202,7 @@ function createPdos() {
         const node = ObjectManager.createObject('\\Device', entry.pdoName, 'Device', {
             pdo: true,
             pci: entry,
+            driver: busDriverNode,
             resources: entry.resourceListPointer,
             nativeDevicePointer: pdoPointer,
         });
@@ -152,24 +211,28 @@ function createPdos() {
 }
 
 function init() {
-    const count = enumerate();
+    const functionCount = enumerate();
     createPdos();
-    os.debugPrint('[pci] ' + count + ' funcoes PCI enumeradas:');
-    for (const e of devices)
-        os.debugPrint('[pci]   ' + e.bus + ':' + e.device + '.' + e.func +
-                      ' ' + e.vendorId.toString(16).padStart(4, '0') + ':' +
-                      e.deviceId.toString(16).padStart(4, '0') +
-                      ' classe ' + e.classCode.toString(16).padStart(2, '0') + '.' +
-                      e.subClass.toString(16).padStart(2, '0') +
-                      (e.irqLine ? ' irq ' + e.irqLine : '') +
-                      ' bars=[' + e.bars.map(b => '0x' + b.value.toString(16)).join(',') + ']' +
-                      ' -> \\Device\\' + e.pdoName);
-    return count;
+    os.debugPrint('[pci] ' + functionCount + ' funcoes PCI enumeradas:');
+    for (const pciFunction of devices)
+        os.debugPrint('[pci]   ' + pciFunction.bus + ':' + pciFunction.device +
+                      '.' + pciFunction.func +
+                      ' ' + pciFunction.vendorId.toString(16).padStart(4, '0') +
+                      ':' + pciFunction.deviceId.toString(16).padStart(4, '0') +
+                      ' classe ' + pciFunction.classCode.toString(16).padStart(2, '0') +
+                      '.' + pciFunction.subClass.toString(16).padStart(2, '0') +
+                      (pciFunction.irqLine ? ' irq ' + pciFunction.irqLine : '') +
+                      ' bars=[' + pciFunction.bars.map(
+                          barEntry => '0x' + barEntry.value.toString(16)).join(',') + ']' +
+                      ' -> \\Device\\' + pciFunction.pdoName);
+    return functionCount;
 }
 
 // procura uma funcao por vendor/device id (para drivers funcionais)
 function findById(vendorId, deviceId) {
-    return devices.find(e => e.vendorId === vendorId && e.deviceId === deviceId) || null;
+    return devices.find(pciFunction => pciFunction.vendorId === vendorId &&
+                        pciFunction.deviceId === deviceId) || null;
 }
 
-module.exports = { init, findById, devices, CmResourceType };
+module.exports = { init, findById, devices, CmResourceType, answerNativePnpIrp,
+                   hardwareIdOf };

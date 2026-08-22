@@ -14,16 +14,20 @@ const NtAbi = require('win32/nt-abi');
 const FM = NtAbi.FAST_MUTEX;
 const APC_LEVEL = 1;
 
-function read32(p, o) { return os.readPhysical32(p + o) >>> 0; }
-function write32(p, o, v) { os.writePhysical32(p + o, v >>> 0); }
+function readField32(address, fieldOffset) {
+    return os.readPhysical32(address + fieldOffset) >>> 0;
+}
+function writeField32(address, fieldOffset, value) {
+    os.writePhysical32(address + fieldOffset, value >>> 0);
+}
 
 // ExInitializeFastMutex(fastMutexPtr)
 function initialize(fastMutexPointer) {
-    write32(fastMutexPointer, FM.COUNT, 1);          // livre
-    write32(fastMutexPointer, FM.OWNER, 0);
-    write32(fastMutexPointer, FM.OWNER + 4, 0);
-    write32(fastMutexPointer, FM.CONTENTION, 0);
-    write32(fastMutexPointer, FM.OLD_IRQL, 0);
+    writeField32(fastMutexPointer, FM.COUNT, 1);          // livre
+    writeField32(fastMutexPointer, FM.OWNER, 0);
+    writeField32(fastMutexPointer, FM.OWNER + 4, 0);
+    writeField32(fastMutexPointer, FM.CONTENTION, 0);
+    writeField32(fastMutexPointer, FM.OLD_IRQL, 0);
     Dispatcher.initializeEvent(fastMutexPointer + FM.EVENT, 0, 0); // sync, reset
 }
 
@@ -32,38 +36,38 @@ function acquire(fastMutexPointer) {
     const oldIrql = Irql.getIrql();
     Irql.raiseIrql(APC_LEVEL);
     for (;;) {
-        if (read32(fastMutexPointer, FM.COUNT) === 1) {
-            write32(fastMutexPointer, FM.COUNT, 0);
-            write32(fastMutexPointer, FM.OWNER,
+        if (readField32(fastMutexPointer, FM.COUNT) === 1) {
+            writeField32(fastMutexPointer, FM.COUNT, 0);
+            writeField32(fastMutexPointer, FM.OWNER,
                     KernelThreads.getCurrentThreadHandle() || 1);
-            write32(fastMutexPointer, FM.OLD_IRQL, oldIrql);
+            writeField32(fastMutexPointer, FM.OLD_IRQL, oldIrql);
             return;
         }
         // contencao real: conta e espera o evento do release
-        write32(fastMutexPointer, FM.CONTENTION,
-                read32(fastMutexPointer, FM.CONTENTION) + 1);
+        writeField32(fastMutexPointer, FM.CONTENTION,
+                readField32(fastMutexPointer, FM.CONTENTION) + 1);
         Dispatcher.waitForSingleObject(fastMutexPointer + FM.EVENT, 0);
     }
 }
 
 // ExTryToAcquireFastMutex(fastMutexPtr) -> 1 se tomou (sem esperar)
 function tryAcquire(fastMutexPointer) {
-    if (read32(fastMutexPointer, FM.COUNT) !== 1) return 0;
+    if (readField32(fastMutexPointer, FM.COUNT) !== 1) return 0;
     const oldIrql = Irql.getIrql();
     Irql.raiseIrql(APC_LEVEL);
-    write32(fastMutexPointer, FM.COUNT, 0);
-    write32(fastMutexPointer, FM.OWNER,
+    writeField32(fastMutexPointer, FM.COUNT, 0);
+    writeField32(fastMutexPointer, FM.OWNER,
             KernelThreads.getCurrentThreadHandle() || 1);
-    write32(fastMutexPointer, FM.OLD_IRQL, oldIrql);
+    writeField32(fastMutexPointer, FM.OLD_IRQL, oldIrql);
     return 1;
 }
 
 // ExReleaseFastMutex(fastMutexPtr): libera, acorda waiters, desce o IRQL
 function release(fastMutexPointer) {
-    write32(fastMutexPointer, FM.OWNER, 0);
-    write32(fastMutexPointer, FM.COUNT, 1);
+    writeField32(fastMutexPointer, FM.OWNER, 0);
+    writeField32(fastMutexPointer, FM.COUNT, 1);
     Dispatcher.setEvent(fastMutexPointer + FM.EVENT);   // acorda quem espera
-    const oldIrql = read32(fastMutexPointer, FM.OLD_IRQL);
+    const oldIrql = readField32(fastMutexPointer, FM.OLD_IRQL);
     Irql.lowerIrql(oldIrql);
 }
 

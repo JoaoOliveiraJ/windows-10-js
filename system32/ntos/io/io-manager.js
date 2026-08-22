@@ -46,7 +46,13 @@ const IRP_MN = {
     CANCEL_REMOVE_DEVICE: 3,
     STOP_DEVICE:   4,
     CANCEL_STOP_DEVICE: 6,
-    QUERY_CAPABILITIES: 9,
+    QUERY_DEVICE_RELATIONS: 0x07,
+    QUERY_INTERFACE: 0x08,
+    QUERY_CAPABILITIES: 0x09,
+    QUERY_RESOURCES: 0x0A,
+    QUERY_DEVICE_TEXT: 0x0C,
+    QUERY_ID: 0x13,
+    QUERY_BUS_INFORMATION: 0x15,
     SURPRISE_REMOVAL: 0x17,
     WAIT_WAKE:     0,
     POWER_SEQUENCE: 1,
@@ -117,6 +123,13 @@ function iofCallDriver(devicePointer, ioRequestPointer) {
     const major = GuestMemory.readGuest8(stackPointer + SL.MAJOR);
     const driverObjectPointer = GuestMemory.readGuest32(devicePointer +
                                                         NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
+    if (!driverObjectPointer) {
+        // PDO sem driver nativo: o bus driver (JS) responde (estilo pci.sys)
+        const pnpStatus = require('drivers/bus/pci').answerNativePnpIrp(
+            devicePointer, ioRequestPointer);
+        if (pnpStatus !== null) return pnpStatus | 0;
+        return STATUS.NOT_SUPPORTED;
+    }
     const handlerAddress =
         GuestMemory.readGuest64(driverObjectPointer + NtAbi.DRIVER_OBJECT.MAJOR_FUNCTION +
                                 major * 8);
@@ -464,6 +477,26 @@ function pnpRemoveDevice(device) {
     return ioRequest.status;
 }
 
+// PnP: IRP_MN_QUERY_ID — o bus driver responde o id de hardware do PDO
+// (BUS_QUERY_ID_TYPE: 0=DeviceID, 1=HardwareIDs, 2=CompatibleIDs, 3=InstanceID)
+// Duas formas reais: dispatch JS (sem pilha nativa) devolve texto; a pilha
+// nativa devolve um PONTEIRO p/ a string wide (Information do IRP).
+function queryDeviceId(devicePath, idType) {
+    const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.QUERY_ID,
+                                                  idType });
+    callDriver(devicePath, ioRequest);
+    if (ioRequest.status !== STATUS.SUCCESS) return null;
+    if (typeof ioRequest.result === 'string') return ioRequest.result;
+    if (ioRequest.info) {
+        // pilha nativa: Information = ponteiro p/ a MULTI_SZ no convidado
+        const GuestStrings = require('win32/guest-strings');
+        const idString = GuestStrings.readGuestWideString(ioRequest.info);
+        GuestMemory.guestFreeBytes(ioRequest.info);
+        return idString;
+    }
+    return null;
+}
+
 // ---- Power Manager: IRP_MJ_POWER SET/QUERY_POWER (device power state) ----
 const PowerManager = require('ntos/po/power-manager');
 const NtAbiPower = require('win32/nt-abi');
@@ -510,4 +543,4 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    getDevicePowerState, dispatchNativePowerIrp,
                    iofCallDriver, iofCompleteRequest,
                    buildSynchronousFsdRequest, buildDeviceIoControlRequest,
-                   pnpRemoveDevice };
+                   pnpRemoveDevice, queryDeviceId };

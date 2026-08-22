@@ -18,8 +18,12 @@ const KernelThreads = require('ntos/ps/kernel-threads');
 const ACTIVE_COUNT = 0x00, EXCLUSIVE_FLAG = 0x04, OWNER = 0x08;
 const SHARED_EVENT = 0x10, EXCLUSIVE_EVENT = 0x28, STRUCT_SIZE = 0x40;
 
-function read32(p, o) { return os.readPhysical32(p + o) >>> 0; }
-function write32(p, o, v) { os.writePhysical32(p + o, v >>> 0); }
+function readField32(address, fieldOffset) {
+    return os.readPhysical32(address + fieldOffset) >>> 0;
+}
+function writeField32(address, fieldOffset, value) {
+    os.writePhysical32(address + fieldOffset, value >>> 0);
+}
 
 function currentOwner() {
     return KernelThreads.getCurrentThreadHandle() || 1;
@@ -27,10 +31,10 @@ function currentOwner() {
 
 // ExInitializeResourceLite(resourcePtr)
 function initialize(resourcePointer) {
-    write32(resourcePointer, ACTIVE_COUNT, 0);
-    write32(resourcePointer, EXCLUSIVE_FLAG, 0);
-    write32(resourcePointer, OWNER, 0);
-    write32(resourcePointer, OWNER + 4, 0);
+    writeField32(resourcePointer, ACTIVE_COUNT, 0);
+    writeField32(resourcePointer, EXCLUSIVE_FLAG, 0);
+    writeField32(resourcePointer, OWNER, 0);
+    writeField32(resourcePointer, OWNER + 4, 0);
     Dispatcher.initializeEvent(resourcePointer + SHARED_EVENT, 0, 0);
     Dispatcher.initializeEvent(resourcePointer + EXCLUSIVE_EVENT, 0, 0);
     return 0;
@@ -39,11 +43,11 @@ function initialize(resourcePointer) {
 // ExAcquireResourceExclusiveLite(resourcePtr, wait) -> BOOLEAN
 function acquireExclusive(resourcePointer, wait) {
     for (;;) {
-        if (read32(resourcePointer, ACTIVE_COUNT) === 0 &&
-            read32(resourcePointer, EXCLUSIVE_FLAG) === 0) {
-            write32(resourcePointer, EXCLUSIVE_FLAG, 1);
-            write32(resourcePointer, ACTIVE_COUNT, 1);
-            write32(resourcePointer, OWNER, currentOwner());
+        if (readField32(resourcePointer, ACTIVE_COUNT) === 0 &&
+            readField32(resourcePointer, EXCLUSIVE_FLAG) === 0) {
+            writeField32(resourcePointer, EXCLUSIVE_FLAG, 1);
+            writeField32(resourcePointer, ACTIVE_COUNT, 1);
+            writeField32(resourcePointer, OWNER, currentOwner());
             return 1;
         }
         if (!(wait & 0xFF)) return 0;
@@ -54,9 +58,9 @@ function acquireExclusive(resourcePointer, wait) {
 // ExAcquireResourceSharedLite(resourcePtr, wait) -> BOOLEAN
 function acquireShared(resourcePointer, wait) {
     for (;;) {
-        if (read32(resourcePointer, EXCLUSIVE_FLAG) === 0) {
-            write32(resourcePointer, ACTIVE_COUNT,
-                    read32(resourcePointer, ACTIVE_COUNT) + 1);
+        if (readField32(resourcePointer, EXCLUSIVE_FLAG) === 0) {
+            writeField32(resourcePointer, ACTIVE_COUNT,
+                    readField32(resourcePointer, ACTIVE_COUNT) + 1);
             return 1;
         }
         if (!(wait & 0xFF)) return 0;
@@ -66,13 +70,13 @@ function acquireShared(resourcePointer, wait) {
 
 // ExReleaseResourceLite(resourcePtr)
 function release(resourcePointer) {
-    if (read32(resourcePointer, EXCLUSIVE_FLAG)) {
-        write32(resourcePointer, EXCLUSIVE_FLAG, 0);
-        write32(resourcePointer, OWNER, 0);
-        write32(resourcePointer, ACTIVE_COUNT, 0);
+    if (readField32(resourcePointer, EXCLUSIVE_FLAG)) {
+        writeField32(resourcePointer, EXCLUSIVE_FLAG, 0);
+        writeField32(resourcePointer, OWNER, 0);
+        writeField32(resourcePointer, ACTIVE_COUNT, 0);
     } else {
-        const remaining = read32(resourcePointer, ACTIVE_COUNT) - 1;
-        write32(resourcePointer, ACTIVE_COUNT, remaining);
+        const remaining = readField32(resourcePointer, ACTIVE_COUNT) - 1;
+        writeField32(resourcePointer, ACTIVE_COUNT, remaining);
         if (remaining > 0) return 0;   // ainda ha leitores
     }
     // acorda escritores e leitores esperando (notification: todos reavaliam)
@@ -83,19 +87,19 @@ function release(resourcePointer) {
 
 // ExIsResourceAcquiredExclusiveLite(resourcePtr) -> BOOLEAN
 function isAcquiredExclusive(resourcePointer) {
-    return read32(resourcePointer, EXCLUSIVE_FLAG) ? 1 : 0;
+    return readField32(resourcePointer, EXCLUSIVE_FLAG) ? 1 : 0;
 }
 
 // ExIsResourceAcquiredSharedLite(resourcePtr) -> ULONG (n. de aquisicoes)
 function isAcquiredShared(resourcePointer) {
-    return read32(resourcePointer, ACTIVE_COUNT);
+    return readField32(resourcePointer, ACTIVE_COUNT);
 }
 
 // ExConvertExclusiveToSharedLite(resourcePtr): escritor vira leitor
 function convertExclusiveToShared(resourcePointer) {
-    if (read32(resourcePointer, EXCLUSIVE_FLAG)) {
-        write32(resourcePointer, EXCLUSIVE_FLAG, 0);
-        write32(resourcePointer, OWNER, 0);
+    if (readField32(resourcePointer, EXCLUSIVE_FLAG)) {
+        writeField32(resourcePointer, EXCLUSIVE_FLAG, 0);
+        writeField32(resourcePointer, OWNER, 0);
         Dispatcher.setEvent(resourcePointer + SHARED_EVENT);
     }
     return 0;
@@ -103,7 +107,7 @@ function convertExclusiveToShared(resourcePointer) {
 
 // ExDeleteResourceLite(resourcePtr): so e' valido sem ninguem dentro
 function deleteResource(resourcePointer) {
-    return read32(resourcePointer, ACTIVE_COUNT) === 0 ? 0 : 0xC000000D | 0;
+    return readField32(resourcePointer, ACTIVE_COUNT) === 0 ? 0 : 0xC000000D | 0;
 }
 
 module.exports = { STRUCT_SIZE, initialize, acquireExclusive, acquireShared,

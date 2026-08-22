@@ -52,8 +52,9 @@ function queueWorkItemEx(itemPointer, routinePointer, queueType, contextPointer,
 }
 
 function unqueue(itemPointer) {
-    const i = workQueue.findIndex(e => e.itemPointer === itemPointer);
-    if (i >= 0) workQueue.splice(i, 1);
+    const queueIndex = workQueue.findIndex(queuedEntry =>
+        queuedEntry.itemPointer === itemPointer);
+    if (queueIndex >= 0) workQueue.splice(queueIndex, 1);
     writeField(itemPointer, WORKITEM.QUEUED, 0);
 }
 

@@ -31,16 +31,18 @@ function readString(serviceName, valueName) {
     return text;
 }
 
-// PnP real: servico com HardwareId PCI casa com uma funcao enumerada pelo
-// bus driver; o AddDevice do driver e' chamado com o PDO (como o NT) e o
-// START_DEVICE vai com os recursos de hardware do PDO
+// PnP real: o servico declara HardwareId (estilo INF); o gerenciador pergunta
+// os ids de CADA PDO via IRP_MN_QUERY_ID ao bus driver e, casando, chama o
+// AddDevice do driver com o PDO (como o NT)
 function pnpMatchAndAddDevice(serviceName, driverNode) {
     const hardwareId = readString(serviceName, 'HardwareId');
     if (!hardwareId) return;
-    const match = hardwareId.match(/VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})/);
-    if (!match) return;
     const Pci = require('drivers/bus/pci');
-    const pciEntry = Pci.findById(parseInt(match[1], 16), parseInt(match[2], 16));
+    let pciEntry = null;
+    for (const candidate of Pci.devices) {
+        const reportedId = IoManager.queryDeviceId('\\Device\\' + candidate.pdoName, 0);
+        if (reportedId === hardwareId) { pciEntry = candidate; break; }
+    }
     if (!pciEntry) {
         os.debugPrint('[pnp] ' + serviceName + ': hardware ' + hardwareId +
                       ' ausente no barramento');
