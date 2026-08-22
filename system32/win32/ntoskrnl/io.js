@@ -14,6 +14,10 @@ const PowerManager = require('ntos/po/power-manager');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
+// extensoes de driver object (IoAllocate/GetDriverObjectExtension):
+// chave "driverObject:tag" -> bloco de dados do driver
+const driverExtensions = new Map();
+
 // cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver.
 // A DeviceExtension (se pedida) fica logo apos o DEVICE_OBJECT, como o NT faz.
 function createDevice(driverObjectPointer, extensionSize, deviceName, deviceType,
@@ -175,6 +179,8 @@ module.exports = {
         'IoGetCurrentThread',
         'IoSetCancelRoutine',             // (irpPtr, routinePtr) -> anterior
         'IoCancelIrp',                    // (irpPtr) — cancela de verdade
+        'IoAllocateDriverObjectExtension',   // (drvObj, tag, size, outPtr)
+        'IoGetDriverObjectExtension',        // (drvObj, tag) -> extPtr
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -341,5 +347,20 @@ module.exports = {
             os.execMsAbi(cancelRoutine, devicePointer, ioRequestPointer);
             return 0;
         },
+        // IoAllocateDriverObjectExtension(drvObj, tagPtr, size, outPtr):
+        // bloco de dados por driver, identificado pela tag (como o NT)
+        (driverObjectPointer, tagPointer, size, outputPointer) => {
+            const key = (driverObjectPointer >>> 0) + ':' +
+                        (tagPointer >>> 0);
+            if (driverExtensions.has(key)) return 0xC0000035 | 0;  // ja existe
+            const extensionPointer = GuestMemory.guestAllocBytes(size >>> 0);
+            driverExtensions.set(key, extensionPointer);
+            GuestMemory.writeGuest64(outputPointer, extensionPointer);
+            return 0;
+        },
+        // IoGetDriverObjectExtension(drvObj, tagPtr) -> extPtr ou 0
+        (driverObjectPointer, tagPointer) =>
+            driverExtensions.get((driverObjectPointer >>> 0) + ':' +
+                                 (tagPointer >>> 0)) || 0,
     ],
 };

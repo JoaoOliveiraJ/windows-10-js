@@ -390,6 +390,12 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\Cancel'), 'cancel device criado');
     checkNativeDriver('\\Device\\Cancel', 'cancel-ok');
 
+    // grupo 27: listas interlocked com spinlock, ERESOURCE variants, driver
+    // object extension
+    Ntoskrnl.loadDriver('/listsync.sys');
+    assert(ObjectManager.lookup('\\Device\\ListSync'), 'listsync device criado');
+    checkNativeDriver('\\Device\\ListSync', 'listsync-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

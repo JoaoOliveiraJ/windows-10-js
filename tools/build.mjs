@@ -143,6 +143,7 @@ const clExe = msvcTools ? path.join(msvcTools, 'bin', 'Hostx64', 'x64', 'cl.exe'
 const linkExe = msvcTools ? path.join(msvcTools, 'bin', 'Hostx64', 'x64', 'link.exe') : null;
 const wdkNtoskrnlLib = sdkVersion ? path.join(wdkKits, 'Lib', sdkVersion, 'km', 'x64', 'ntoskrnl.lib') : null;
 const wdkHalLib = sdkVersion ? path.join(wdkKits, 'Lib', sdkVersion, 'km', 'x64', 'hal.lib') : null;
+const wdkNtstrsafeLib = sdkVersion ? path.join(wdkKits, 'Lib', sdkVersion, 'km', 'x64', 'ntstrsafe.lib') : null;
 const msvcOk = !!(clExe && existsSync(clExe) && linkExe && sdkVersion && wdkNtoskrnlLib && existsSync(wdkNtoskrnlLib));
 console.log(msvcOk ? `drivers via MSVC + WDK ${sdkVersion}` : 'MSVC/WDK ausente: drivers via zig (fallback)');
 
@@ -174,7 +175,7 @@ driverSources.forEach((driverSource, index) => {
             driverSource, '/Fo' + objFile]);
         run(linkExe, ['/nologo', '/driver', '/entry:DriverEntry', '/subsystem:native',
             '/machine:x64', '/base:' + imageBase, '/nodefaultlib',
-            objFile, wdkNtoskrnlLib, wdkHalLib, '/out:' + sysFile]);
+            objFile, wdkNtoskrnlLib, wdkHalLib, wdkNtstrsafeLib, '/out:' + sysFile]);
     } else {
         run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-fno-builtin', '-O2',
             '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,' + imageBase,

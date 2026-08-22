@@ -28,6 +28,8 @@ module.exports = {
         'ExIsResourceAcquiredSharedLite',
         'ExConvertExclusiveToSharedLite',
         'ExDeleteResourceLite',
+        'ExAcquireSharedStarveExclusive',
+        'ExAcquireSharedWaitForExclusive',
         'ExInitializeRundownProtection',
         'ExAcquireRundownProtection',
         'ExReleaseRundownProtection',
@@ -75,6 +77,12 @@ module.exports = {
         (resourcePointer) => Resource.isAcquiredShared(resourcePointer),
         (resourcePointer) => Resource.convertExclusiveToShared(resourcePointer),
         (resourcePointer) => Resource.deleteResource(resourcePointer),
+        // ExAcquireSharedStarveExclusive(resourcePtr, wait)
+        (resourcePointer, wait) =>
+            Resource.acquireSharedStarveExclusive(resourcePointer, wait),
+        // ExAcquireSharedWaitForExclusive(resourcePtr, wait)
+        (resourcePointer, wait) =>
+            Resource.acquireSharedWaitForExclusive(resourcePointer, wait),
         // RUNDOWN_REFERENCE: Count real do NT — bit 0 = rundown ativo,
         // referencias nos bits acima (<<1)
         (rundownPointer) => {   // ExInitializeRundownProtection

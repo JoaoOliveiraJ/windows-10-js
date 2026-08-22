@@ -52,6 +52,25 @@ function appendToUnicodeString(destPointer, newText) {
     return 0;
 }
 
+// spinlock (test-and-set + IRQL DISPATCH) para os ExInterlocked* de lista —
+// mesma semantica dos Ke*SpinLock (ver ke.js)
+function spinLockAcquire(spinLockPointer) {
+    const Irql = require('ntos/ke/irql');
+    const oldIrql = Irql.getIrql();
+    Irql.raiseIrql(Irql.DISPATCH_LEVEL);
+    for (;;) {
+        if (GuestMemory.readGuest32(spinLockPointer) === 0) {
+            GuestMemory.writeGuest32(spinLockPointer, 1);
+            return oldIrql;
+        }
+    }
+}
+function spinLockRelease(spinLockPointer, oldIrql) {
+    const Irql = require('ntos/ke/irql');
+    GuestMemory.writeGuest32(spinLockPointer, 0);
+    Irql.lowerIrql(oldIrql);
+}
+
 module.exports = {
     names: [
         'RtlInitUnicodeString',
@@ -83,6 +102,10 @@ module.exports = {
         'RtlPrefixUnicodeString',
         'RtlAppendUnicodeStringToString',
         'RtlAppendUnicodeToString',
+        'InterlockedPushEntryList',
+        'InterlockedPopEntryList',
+        'ExInterlockedInsertTailList',
+        'ExInterlockedRemoveHeadList',
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
@@ -323,6 +346,48 @@ module.exports = {
             const currentText = GuestStrings.readUnicodeString(destPointer);
             const suffixText = GuestStrings.readGuestWideString(wideStringPointer);
             return appendToUnicodeString(destPointer, currentText + suffixText);
+        },
+        // InterlockedPushEntryList(headPtr, entryPtr): SINGLE_LIST_ENTRY —
+        // entry->Next = head->Next; head->Next = entry; retorna a antiga cabeca
+        (headPointer, entryPointer) => {
+            const oldHead = GuestMemory.readGuest64(headPointer);
+            GuestMemory.writeGuest64(entryPointer, oldHead);
+            GuestMemory.writeGuest64(headPointer, entryPointer);
+            return oldHead;
+        },
+        // InterlockedPopEntryList(headPtr) -> entry ou 0 (lista vazia)
+        (headPointer) => {
+            const head = GuestMemory.readGuest64(headPointer);
+            if (!head) return 0;
+            GuestMemory.writeGuest64(headPointer, GuestMemory.readGuest64(head));
+            return head;
+        },
+        // ExInterlockedInsertTailList(headPtr, entryPtr, spinLockPtr):
+        // LIST_ENTRY circular dupla (Flink/Blink guardam ENDERECOS) sob
+        // spinlock a DISPATCH_LEVEL
+        (headPointer, entryPointer, spinLockPointer) => {
+            const oldIrql = spinLockAcquire(spinLockPointer);
+            const lastEntry = GuestMemory.readGuest64(headPointer + 8);   // Blink
+            GuestMemory.writeGuest64(entryPointer, headPointer);      // Flink=sentinel
+            GuestMemory.writeGuest64(entryPointer + 8, lastEntry);    // Blink=antigo ultimo
+            GuestMemory.writeGuest64(lastEntry, entryPointer);        // ultimo->Flink=entry
+            GuestMemory.writeGuest64(headPointer + 8, entryPointer);  // sentinel->Blink
+            spinLockRelease(spinLockPointer, oldIrql);
+            return lastEntry === headPointer ? 0 : lastEntry;   // 0 se estava vazia
+        },
+        // ExInterlockedRemoveHeadList(headPtr, spinLockPtr) -> entry ou 0
+        (headPointer, spinLockPointer) => {
+            const oldIrql = spinLockAcquire(spinLockPointer);
+            const firstEntry = GuestMemory.readGuest64(headPointer);      // Flink
+            let removed = 0;
+            if (firstEntry !== headPointer) {   // nao vazia (Flink != sentinel)
+                removed = firstEntry;
+                const newFirst = GuestMemory.readGuest64(firstEntry);     // next
+                GuestMemory.writeGuest64(headPointer, newFirst);
+                GuestMemory.writeGuest64(newFirst + 8, headPointer);      // novo primeiro->Blink = sentinel
+            }
+            spinLockRelease(spinLockPointer, oldIrql);
+            return removed;
         },
     ],
 };
