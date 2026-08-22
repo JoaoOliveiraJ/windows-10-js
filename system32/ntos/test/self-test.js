@@ -231,6 +231,23 @@ function run() {
                       Smp.apSlotCount() + ' APs executaram nativo em paralelo');
     }
 
+    // grupo 14: pilha de devices — filtro WDM real acima do \Device\Echo
+    // (attach, IoCallDriver descendo a pilha, completion routines subindo)
+    Ntoskrnl.loadDriver('/filter.sys');
+    assert(ObjectManager.lookup('\\Device\\Filter'), 'filter device criado');
+    let echoRequest = IoManager.write('\\Device\\Echo', 'filtro');
+    assert(echoRequest.status === IoManager.STATUS.SUCCESS,
+           'write atraves do filtro');
+    echoRequest = IoManager.read('\\Device\\Echo');
+    assert(echoRequest.result === 'filtro',
+           'echo intacto atraves do filtro -> "' + echoRequest.result + '"');
+    const filterStats = IoManager.deviceControl('\\Device\\Filter', 0x801);
+    assert(filterStats.status === IoManager.STATUS.SUCCESS &&
+           filterStats.result === 'filter-ok:2,2',
+           'IOCTL do filtro falhou: status=0x' +
+           (filterStats.status >>> 0).toString(16) +
+           ' resultado="' + filterStats.result + '"');
+
     // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS
     Ntoskrnl.loadDriver('/lifecycle.sys');
     assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');

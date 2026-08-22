@@ -80,6 +80,71 @@ function deleteDevice(devicePointer) {
     return 0;
 }
 
+// IoAttachDeviceToDeviceStack(source, target) -> device sobre o qual anexou.
+// Sobe o source ao TOPO da pilha do alvo (cadeia AttachedDevice), ajusta o
+// StackSize (+1) e faz o namespace despachar IRPs do alvo p/ o novo topo.
+function attachDeviceToDeviceStack(sourcePointer, targetPointer) {
+    let topPointer = targetPointer;
+    for (;;) {
+        const next = GuestMemory.readGuest32(topPointer + DEVICE.ATTACHED_DEVICE);
+        if (!next) break;
+        topPointer = next;
+    }
+    GuestMemory.writeGuest64(topPointer + DEVICE.ATTACHED_DEVICE, sourcePointer);
+    const targetStackSize = GuestMemory.readGuest8(topPointer + DEVICE.STACK_SIZE) || 1;
+    GuestMemory.writeGuest8(sourcePointer + DEVICE.STACK_SIZE, targetStackSize + 1);
+
+    const driverRoot = ObjectManager.lookup('\\Device');
+    if (driverRoot && driverRoot.children) {
+        for (const child of driverRoot.children.values()) {
+            if (child.data && child.data.nativeDevicePointer === targetPointer) {
+                child.data.stackTopPointer = sourcePointer;
+                break;
+            }
+        }
+    }
+    return topPointer;
+}
+
+// IoDetachDevice(target): desanexa o device imediatamente ACIMA do alvo
+function detachDevice(targetPointer) {
+    const upperPointer = GuestMemory.readGuest32(targetPointer + DEVICE.ATTACHED_DEVICE);
+    if (!upperPointer) return 0;
+    GuestMemory.writeGuest64(targetPointer + DEVICE.ATTACHED_DEVICE,
+        GuestMemory.readGuest64(upperPointer + DEVICE.ATTACHED_DEVICE));
+    GuestMemory.writeGuest64(upperPointer + DEVICE.ATTACHED_DEVICE, 0);
+
+    const driverRoot = ObjectManager.lookup('\\Device');
+    if (driverRoot && driverRoot.children) {
+        for (const child of driverRoot.children.values()) {
+            if (child.data && child.data.stackTopPointer === upperPointer) {
+                child.data.stackTopPointer = targetPointer;
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
+// IoGetDeviceObjectPointer(name, access, outFileObject, outDeviceObject)
+// Resolve o nome no namespace; devolve o TOPO da pilha + um FILE_OBJECT real.
+function getDeviceObjectPointer(namePointer, _access, fileObjectOut, deviceObjectOut) {
+    const name = GuestStrings.readUnicodeString(namePointer);
+    const node = ObjectManager.lookup(name);
+    if (!node || node.type !== 'Device')
+        return 0xC0000034 | 0;   // STATUS_OBJECT_NAME_NOT_FOUND
+    const devicePointer = node.data.stackTopPointer || node.data.nativeDevicePointer;
+    const fileObjectPointer = GuestMemory.guestAllocBytes(NtAbi.FILE_OBJECT.STRUCT_SIZE);
+    GuestMemory.writeGuest16(fileObjectPointer + NtAbi.FILE_OBJECT.TYPE, 5);
+    GuestMemory.writeGuest16(fileObjectPointer + NtAbi.FILE_OBJECT.SIZE,
+                             NtAbi.FILE_OBJECT.STRUCT_SIZE);
+    GuestMemory.writeGuest64(fileObjectPointer + NtAbi.FILE_OBJECT.DEVICE_OBJECT,
+                             devicePointer);
+    GuestMemory.writeGuest64(fileObjectOut, fileObjectPointer);
+    GuestMemory.writeGuest64(deviceObjectOut, devicePointer);
+    return 0;
+}
+
 module.exports = {
     names: [
         'IoCreateDevice',
@@ -93,6 +158,11 @@ module.exports = {
         'IoAllocateWorkItem',
         'IoQueueWorkItem',
         'IoFreeWorkItem',
+        'IoCallDriver',
+        'IofCallDriver',              // nome real exportado (IoCallDriver e macro)
+        'IoAttachDeviceToDeviceStack',
+        'IoDetachDevice',
+        'IoGetDeviceObjectPointer',
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -113,27 +183,30 @@ module.exports = {
         (linkPointer) =>
             ObjectManager.unlink(GuestStrings.readUnicodeString(linkPointer))
                 ? 0 : 0xC0000009,   // STATUS_NOT_FOUND
-        // IoAllocateIrp(stackSize, chargeQuota) -> IRP real zerado
+        // IoAllocateIrp(stackSize, chargeQuota) -> IRP real zerado, posicionado
+        // ACIMA do topo da pilha (convencao NT: o 1o IofCallDriver desce)
         (stackSize, _chargeQuota) => {
-            const size = NtAbi.IRP.STRUCT_SIZE +
-                         Math.max(1, stackSize) * NtAbi.IRP.STACK_LOCATION_SIZE;
+            const count = Math.max(1, stackSize);
+            const size = NtAbi.IRP.STRUCT_SIZE + count * NtAbi.IRP.STACK_LOCATION_SIZE;
             const address = GuestMemory.guestAllocBytes(size);
             GuestMemory.writeGuest16(address + NtAbi.IRP.TYPE, NtAbi.IRP.IO_TYPE);
             GuestMemory.writeGuest16(address + NtAbi.IRP.SIZE_FIELD, size);
-            GuestMemory.writeGuest8(address + NtAbi.IRP.STACK_COUNT, stackSize);
-            GuestMemory.writeGuest8(address + NtAbi.IRP.CURRENT_LOCATION, 1);
+            GuestMemory.writeGuest8(address + NtAbi.IRP.STACK_COUNT, count);
+            GuestMemory.writeGuest8(address + NtAbi.IRP.CURRENT_LOCATION, count + 1);
             GuestMemory.writeGuest64(address + NtAbi.IRP.CURRENT_STACK_LOCATION,
                                      address + NtAbi.IRP.STRUCT_SIZE +
-                                     (Math.max(1, stackSize) - 1) * NtAbi.IRP.STACK_LOCATION_SIZE);
+                                     count * NtAbi.IRP.STACK_LOCATION_SIZE);
             return address;
         },
         // IoFreeIrp(irpPtr)
         (ioRequestPointer) => { GuestMemory.guestFreeBytes(ioRequestPointer); return 0; },
-        // IoCompleteRequest(irpPtr, priorityBoost): status ja esta no IoStatus;
-        //   aqui so registramos a conclusao (toy: sem APC de user)
-        (_ioRequestPointer, _priorityBoost) => 0,
-        // IofCompleteRequest: mesma coisa (IoCompleteRequest e macro p/ ela)
-        (_ioRequestPointer, _priorityBoost) => 0,
+        // IoCompleteRequest(irpPtr, priorityBoost): conclusao real — sobe a
+        // pilha chamando as completion routines (ver ntos/io/io-manager.js)
+        (ioRequestPointer, _priorityBoost) =>
+            require('ntos/io/io-manager').iofCompleteRequest(ioRequestPointer),
+        // IofCompleteRequest: idem (IoCompleteRequest e macro p/ ela)
+        (ioRequestPointer, _priorityBoost) =>
+            require('ntos/io/io-manager').iofCompleteRequest(ioRequestPointer),
         // IoAllocateWorkItem(devicePtr) -> itemPointer
         (devicePointer) => {
             const itemPointer = GuestMemory.guestAllocBytes(NtAbi.IO_WORKITEM.SIZE);
@@ -151,5 +224,21 @@ module.exports = {
             GuestMemory.guestFreeBytes(itemPointer);
             return 0;
         },
+        // IoCallDriver(devicePtr, irpPtr) / IofCallDriver: desce um nivel
+        (devicePointer, ioRequestPointer) =>
+            require('ntos/io/io-manager').iofCallDriver(devicePointer,
+                                                        ioRequestPointer),
+        (devicePointer, ioRequestPointer) =>
+            require('ntos/io/io-manager').iofCallDriver(devicePointer,
+                                                        ioRequestPointer),
+        // IoAttachDeviceToDeviceStack(sourcePtr, targetPtr) -> topo anterior
+        (sourcePointer, targetPointer) =>
+            attachDeviceToDeviceStack(sourcePointer, targetPointer),
+        // IoDetachDevice(targetPtr)
+        (targetPointer) => detachDevice(targetPointer),
+        // IoGetDeviceObjectPointer(namePtr, access, outFileObj, outDevObj)
+        (namePointer, access, fileObjectOut, deviceObjectOut) =>
+            getDeviceObjectPointer(namePointer, access, fileObjectOut,
+                                   deviceObjectOut),
     ],
 };

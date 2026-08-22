@@ -76,17 +76,82 @@ const IrpBuilder = require('win32/ntoskrnl/irp-builder');
 const GuestMemory = require('win32/guest-memory');
 const NtAbi = require('win32/nt-abi');
 
-function callNativeDriver(device, ioRequestPacket) {
-    const devicePointer = device.data.nativeDevicePointer;
+const SL = NtAbi.IO_STACK_LOCATION;
+const IRP = NtAbi.IRP;
+
+// ---- IofCallDriver (semantica real do NT): desce um nivel na pilha --------
+// CL--, CSL--, grava DeviceObject no slot e chama MajorFunction[major] do
+// driver dono do device alvo. Usada pelo I/O Manager (primeiro despacho) e
+// pelo export IoCallDriver (drivers repassando o IRP para baixo).
+function iofCallDriver(devicePointer, ioRequestPointer) {
+    const currentLocation = GuestMemory.readGuest8(ioRequestPointer + IRP.CURRENT_LOCATION);
+    const stackCount = GuestMemory.readGuest8(ioRequestPointer + IRP.STACK_COUNT);
+    if (currentLocation <= 1) return STATUS.NOT_SUPPORTED;  // estourou a pilha
+    const stackPointer =
+        GuestMemory.readGuest32(ioRequestPointer + IRP.CURRENT_STACK_LOCATION) - SL.SIZE;
+    GuestMemory.writeGuest8(ioRequestPointer + IRP.CURRENT_LOCATION,
+                            currentLocation - 1);
+    GuestMemory.writeGuest64(ioRequestPointer + IRP.CURRENT_STACK_LOCATION,
+                             stackPointer);
+    GuestMemory.writeGuest64(stackPointer + SL.DEVICE_OBJECT, devicePointer);
+
+    const major = GuestMemory.readGuest8(stackPointer + SL.MAJOR);
     const driverObjectPointer = GuestMemory.readGuest32(devicePointer +
                                                         NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
     const handlerAddress =
         GuestMemory.readGuest64(driverObjectPointer + NtAbi.DRIVER_OBJECT.MAJOR_FUNCTION +
-                                ioRequestPacket.major * 8);
-    if (!handlerAddress) {
-        ioRequestPacket.status = STATUS.NOT_SUPPORTED;
-        return ioRequestPacket;
+                                major * 8);
+    if (!handlerAddress) return STATUS.NOT_SUPPORTED;
+    return os.execMsAbi(handlerAddress, devicePointer, ioRequestPointer) | 0;
+}
+
+// ---- IofCompleteRequest (semantica real do NT/ReactOS): --------------------
+// Percorre da posicao atual ao topo: para cada slot, se o Control marcar
+// SL_INVOKE_ON_SUCCESS/ERROR conforme o IoStatus, chama a completion routine
+// com o DeviceObject do slot ACIMA (o IRP ja aponta p/ ele). O IRP sobe um
+// nivel ANTES de cada chamada. STATUS_MORE_PROCESSING_REQUIRED interrompe.
+function iofCompleteRequest(ioRequestPointer) {
+    const stackCount = GuestMemory.readGuest8(ioRequestPointer + IRP.STACK_COUNT);
+    let currentLocation = GuestMemory.readGuest8(ioRequestPointer + IRP.CURRENT_LOCATION);
+    let currentStackPointer = GuestMemory.readGuest32(ioRequestPointer +
+                                                      IRP.CURRENT_STACK_LOCATION);
+    let slotUnderReview = currentStackPointer;
+    currentLocation++;
+    currentStackPointer += SL.SIZE;
+
+    while (currentLocation <= stackCount + 1) {
+        const control = GuestMemory.readGuest8(slotUnderReview + SL.CONTROL);
+        const completionRoutine = GuestMemory.readGuest64(slotUnderReview +
+                                                          SL.COMPLETION_ROUTINE);
+        const status = IrpBuilder.readIoStatus(ioRequestPointer).status;
+        const invoke = completionRoutine &&
+            ((status >= 0 && (control & NtAbi.SL_INVOKE_ON_SUCCESS)) ||
+             (status < 0 && (control & NtAbi.SL_INVOKE_ON_ERROR)));
+
+        GuestMemory.writeGuest8(ioRequestPointer + IRP.CURRENT_LOCATION,
+                                currentLocation);
+        GuestMemory.writeGuest64(ioRequestPointer + IRP.CURRENT_STACK_LOCATION,
+                                 currentStackPointer);
+
+        if (invoke) {
+            const deviceObject = currentLocation === stackCount + 1 ? 0 :
+                GuestMemory.readGuest32(currentStackPointer + SL.DEVICE_OBJECT);
+            const context = GuestMemory.readGuest64(slotUnderReview + SL.CONTEXT);
+            const result = os.execMsAbi(completionRoutine, deviceObject,
+                                        ioRequestPointer, context) | 0;
+            if (result === NtAbi.STATUS.MORE_PROCESSING_REQUIRED) return result;
+        }
+        slotUnderReview += SL.SIZE;
+        currentLocation++;
+        currentStackPointer += SL.SIZE;
     }
+    return 0;
+}
+
+function callNativeDriver(device, ioRequestPacket) {
+    // despacha para o TOPO da pilha de devices (filtros acima do dono)
+    const devicePointer = device.data.stackTopPointer || device.data.nativeDevicePointer;
+    const stackCount = GuestMemory.readGuest8(devicePointer + NtAbi.DEVICE_OBJECT.STACK_SIZE) || 1;
 
     const data = ioRequestPacket.params.data;
     const dataLength = data ? String(data).length : 0;
@@ -104,8 +169,7 @@ function callNativeDriver(device, ioRequestPacket) {
                 GuestMemory.writeGuest8(bufferAddress + i, String(data).charCodeAt(i) & 0xFF);
     }
 
-    const irpAddress = GuestMemory.guestAllocBytes(NtAbi.IRP.STRUCT_SIZE +
-                                                   NtAbi.IRP.STACK_LOCATION_SIZE);
+    const irpAddress = GuestMemory.guestAllocBytes(IrpBuilder.sizeFor(stackCount));
     IrpBuilder.build(irpAddress, {
         major: ioRequestPacket.major,
         minor: ioRequestPacket.minor,
@@ -113,9 +177,14 @@ function callNativeDriver(device, ioRequestPacket) {
         bufferLength: needsBuffer ? bufferLength : 0,
         deviceObject: devicePointer,
         power: ioRequestPacket.params.power,
+        stackCount,
+        ioctl: ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL
+            ? { code: ioRequestPacket.params.controlCode >>> 0,
+                inputLength: dataLength }
+            : null,
     });
 
-    const guestStatus = os.execMsAbi(handlerAddress, devicePointer, irpAddress);
+    const guestStatus = iofCallDriver(devicePointer, irpAddress);
 
     const ioStatus = IrpBuilder.readIoStatus(irpAddress);
     ioRequestPacket.status = ioStatus.status;
@@ -123,7 +192,9 @@ function callNativeDriver(device, ioRequestPacket) {
         ioRequestPacket.status = guestStatus;             // status pelo retorno
     ioRequestPacket.info = ioStatus.information;
 
-    if (ioRequestPacket.major === IRP_MJ.READ && ioRequestPacket.info > 0) {
+    if ((ioRequestPacket.major === IRP_MJ.READ ||
+         ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL) &&
+        ioRequestPacket.info > 0) {
         let text = '';
         for (let i = 0; i < ioRequestPacket.info; i++)
             text += String.fromCharCode(GuestMemory.readGuest8(bufferAddress + i));
@@ -230,4 +301,5 @@ function getDevicePowerState(devicePath) {
 module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    createDevice, callDriver, read, write, deviceControl,
                    pnpStartDevice, setDevicePowerState, queryDevicePowerState,
-                   getDevicePowerState, dispatchNativePowerIrp };
+                   getDevicePowerState, dispatchNativePowerIrp,
+                   iofCallDriver, iofCompleteRequest };

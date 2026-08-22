@@ -67,15 +67,39 @@ module.exports = {
         READ_LENGTH: 0x08,       // Parameters.Read.Length (Write idem)
         READ_OFFSET: 0x10,       // Parameters.Read.ByteOffset
         IOCTL_OUT_LENGTH: 0x08,  // DeviceIoControl.OutputBufferLength
-        IOCTL_IN_LENGTH: 0x0C,
-        IOCTL_CODE: 0x10,
+        IOCTL_IN_LENGTH: 0x10,   // InputBufferLength (POINTER_ALIGNMENT: 8-align)
+        IOCTL_CODE: 0x18,        // IoControlCode (idem) — medido no wdm.h x64
+        IOCTL_TYPE3_BUFFER: 0x20,
         POWER_SYSTEM_CONTEXT: 0x08,  // Parameters.Power.SystemContext
         POWER_TYPE: 0x10,            // Parameters.Power.Type (POINTER_ALIGNMENT)
         POWER_STATE: 0x18,           // Parameters.Power.State (POWER_STATE)
         POWER_SHUTDOWN_TYPE: 0x20,   // Parameters.Power.ShutdownType
         DEVICE_OBJECT: 0x28,
         FILE_OBJECT: 0x30,
+        COMPLETION_ROUTINE: 0x38,    // IoSetCompletionRoutine (macro no WDK)
+        CONTEXT: 0x40,               // contexto da completion routine
+        FLAGS: 2,
+        CONTROL: 3,                  // SL_INVOKE_* bits
         SIZE: 0x48,
+    },
+    // bits do campo Control da IO_STACK_LOCATION (wdm.h)
+    SL_INVOKE_ON_CANCEL: 0x20,
+    SL_INVOKE_ON_SUCCESS: 0x40,
+    SL_INVOKE_ON_ERROR: 0x80,
+    // NTSTATUS usados no modelo de conclusao (wdm.h/ntstatus.h)
+    STATUS: {
+        SUCCESS: 0,
+        PENDING: 0x103,
+        MORE_PROCESSING_REQUIRED: 0xC0000467 - 0x100000000,  // i32 sinal
+        INVALID_PARAMETER: 0xC000000D - 0x100000000,
+        NOT_SUPPORTED: 0xC00000BB - 0x100000000,
+    },
+    // FILE_OBJECT (wdm.h x64)
+    FILE_OBJECT: {
+        TYPE: 0,                 // IO_TYPE_FILE = 5
+        SIZE: 2,
+        DEVICE_OBJECT: 0x08,
+        STRUCT_SIZE: 0xB8,
     },
     // POWER_STATE_TYPE (wdm.h)
     POWER_STATE_TYPE: { SYSTEM_POWER_STATE: 0, DEVICE_POWER_STATE: 1 },

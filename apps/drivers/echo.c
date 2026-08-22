@@ -10,7 +10,18 @@ static ULONG lastLength;
 static int pnpStarted;
 
 static NTSTATUS echoRead(PDEVICE_OBJECT deviceObject, PIRP irp) {
-    return JsosReadWithMessage(deviceObject, irp, lastText);
+    /* devolve exatamente lastLength bytes (a string NAO e terminada em NUL) */
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+    ULONG i;
+    ULONG n = stack->Parameters.Read.Length < lastLength
+              ? stack->Parameters.Read.Length : lastLength;
+    (void)deviceObject;
+    for (i = 0; i < n; i++)
+        ((char *)irp->AssociatedIrp.SystemBuffer)[i] = lastText[i];
+    irp->IoStatus.Status = STATUS_SUCCESS;
+    irp->IoStatus.Information = n;
+    IoCompleteRequest(irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
 }
 static NTSTATUS echoWrite(PDEVICE_OBJECT deviceObject, PIRP irp) {
     return JsosWriteToStorage(deviceObject, irp, lastText, &lastLength);
