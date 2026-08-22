@@ -378,6 +378,12 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\Compat'), 'compat device criado');
     checkNativeDriver('\\Device\\Compat', 'compat-ok');
 
+    // grupo 25: lookaside lists, MDL com PFNs reais, resolucao dinamica de
+    // export chamado por ponteiro de funcao, ExGetPreviousMode
+    Ntoskrnl.loadDriver('/memdrv.sys');
+    assert(ObjectManager.lookup('\\Device\\MemDrv'), 'memdrv device criado');
+    checkNativeDriver('\\Device\\MemDrv', 'memdrv-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

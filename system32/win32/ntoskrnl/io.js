@@ -170,6 +170,9 @@ module.exports = {
         'IoStartTimer',
         'IoStopTimer',
         'IoQueueWorkItemEx',              // (item, routineExPtr, queueType, contextPtr)
+        'IoAllocateMdl',                  // (va, length, secondary, chargeQuota, irpPtr)
+        'IoFreeMdl',
+        'IoGetCurrentThread',
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -279,5 +282,38 @@ module.exports = {
                                       contextPointer, true);
             return 0;
         },
+        // IoAllocateMdl(va, length, secondary, chargeQuota, irpPtr) -> MDL:
+        // struct real do wdm.h + array de PFNs calculado pelas page tables
+        (virtualAddress, length, _secondary, _chargeQuota, _irpPointer) => {
+            const MDL = NtAbi.MDL;
+            const startVa = virtualAddress & ~0xFFF;
+            const byteOffset = virtualAddress & 0xFFF;
+            const pageCount = Math.ceil((byteOffset + (length >>> 0)) / 0x1000);
+            const mdlPointer = GuestMemory.guestAllocBytes(MDL.PFN_ARRAY +
+                                                           pageCount * 8);
+            GuestMemory.writeGuest64(mdlPointer + MDL.NEXT, 0);
+            GuestMemory.writeGuest16(mdlPointer + MDL.SIZE,
+                                     MDL.PFN_ARRAY + pageCount * 8);
+            GuestMemory.writeGuest16(mdlPointer + MDL.MDL_FLAGS,
+                                     MDL.FLAG_MAPPED_TO_SYSTEM_VA |
+                                     MDL.FLAG_SOURCE_NONPAGED);
+            GuestMemory.writeGuest64(mdlPointer + MDL.MAPPED_SYSTEM_VA,
+                                     virtualAddress);   // identity-mapped
+            GuestMemory.writeGuest64(mdlPointer + MDL.START_VA, startVa);
+            GuestMemory.writeGuest32(mdlPointer + MDL.BYTE_COUNT, length >>> 0);
+            GuestMemory.writeGuest32(mdlPointer + MDL.BYTE_OFFSET, byteOffset);
+            // PFNs reais: VA -> frame fisico pelas tabelas de pagina
+            const Paging = require('ntos/mm/paging');
+            for (let page = 0; page < pageCount; page++) {
+                const physical = Paging.translate(startVa + page * 0x1000);
+                GuestMemory.writeGuest64(mdlPointer + MDL.PFN_ARRAY + page * 8,
+                                         Math.floor(physical / 0x1000));
+            }
+            return mdlPointer;
+        },
+        // IoFreeMdl(mdlPtr)
+        (mdlPointer) => { GuestMemory.guestFreeBytes(mdlPointer); return 0; },
+        // IoGetCurrentThread() -> handle da thread nativa corrente
+        () => require('ntos/ps/kernel-threads').getCurrentThreadHandle(),
     ],
 };

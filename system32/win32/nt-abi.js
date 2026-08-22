@@ -194,4 +194,29 @@ module.exports = {
     },
     // KEY_VALUE_PARTIAL_INFORMATION (wdm.h)
     KEY_VALUE_PARTIAL: { TITLE_INDEX: 0, TYPE: 4, DATA_LENGTH: 8, DATA: 12 },
+    // MDL (wdm.h x64; o array de PFNs comeca em 0x30)
+    MDL: {
+        NEXT: 0x00,
+        SIZE: 0x08,
+        MDL_FLAGS: 0x0A,
+        PROCESS: 0x10,
+        MAPPED_SYSTEM_VA: 0x18,
+        START_VA: 0x20,
+        BYTE_COUNT: 0x28,
+        BYTE_OFFSET: 0x2C,
+        PFN_ARRAY: 0x30,
+        FLAG_MAPPED_TO_SYSTEM_VA: 0x0001,
+        FLAG_PAGES_LOCKED: 0x0002,
+        FLAG_SOURCE_NONPAGED: 0x0004,
+    },
+    // PAGED_LOOKASIDE_LIST (objeto do kernel; campos internos do jsOS)
+    LOOKASIDE_LIST: {
+        DEPTH: 0x10,             // u16 max de blocos cacheados
+        BLOCK_SIZE: 0x18,        // u32
+        TAG: 0x1C,               // u32
+        ALLOC_COUNT: 0x20,       // u32
+        FREE_COUNT: 0x24,        // u32
+        FREE_HEAD: 0x28,         // u32 (cadeia: next no 1o dword do bloco)
+        SIZE: 0x80,              // sizeof real no NT x64
+    },
 };

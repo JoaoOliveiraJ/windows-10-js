@@ -18,6 +18,10 @@ module.exports = {
         'MmMapIoSpace',
         'MmUnmapIoSpace',
         'MmGetPhysicalAddress',
+        'MmGetSystemAddressForMdlSafe',
+        'MmGetSystemRoutineAddress',
+        'MmMapLockedPagesSpecifyCache',
+        'MmUnmapLockedPages',
     ],
     handlers: [
         // MmAllocateNonCachedMemory(size) -> memoria fisica zerada
@@ -41,5 +45,43 @@ module.exports = {
         },
         // MmGetPhysicalAddress(va) -> PA: anda as tabelas de pagina DE VERDADE
         (virtualAddress) => Paging.translate(virtualAddress),
+        // MmGetSystemAddressForMdlSafe(mdlPtr, priority) -> VA mapeada
+        // (identity: MappedSystemVa ja e' o endereco virtual)
+        (mdlPointer, _priority) =>
+            GuestMemory.readGuest64(mdlPointer + NtAbi.MDL.MAPPED_SYSTEM_VA),
+        // MmGetSystemRoutineAddress(uniPtr) -> endereco chamavel do export
+        // (o trampolim que despacha p/ o handler JS — como o GetProcAddress
+        // de kernel do NT)
+        (unicodePointer) => {
+            const GuestStrings = require('win32/guest-strings');
+            const routineName = GuestStrings.readUnicodeString(unicodePointer);
+            const apiId = require('win32/ntoskrnl').lookup('', routineName);
+            if (apiId < 0) return 0;
+            return os.getWin32ThunkTable() + apiId * 10;   // stub de 10 bytes
+        },
+        // MmMapLockedPagesSpecifyCache(mdl, mode, cache, baseAddr, bugCheck,
+        //                              priority) -> VA: mapeia as paginas do
+        // MDL; identity-mapped: StartVa + ByteOffset (grava no MDL, como o NT)
+        (mdlPointer, _accessMode, _cacheType, requestedAddress, _bugCheck,
+         _priority) => {
+            const MDL = NtAbi.MDL;
+            const startVa = GuestMemory.readGuest64(mdlPointer + MDL.START_VA);
+            const byteOffset = GuestMemory.readGuest32(mdlPointer + MDL.BYTE_OFFSET);
+            const mappedAddress = requestedAddress || (startVa + byteOffset);
+            GuestMemory.writeGuest64(mdlPointer + MDL.MAPPED_SYSTEM_VA,
+                                     mappedAddress);
+            GuestMemory.writeGuest16(mdlPointer + MDL.MDL_FLAGS,
+                GuestMemory.readGuest16(mdlPointer + MDL.MDL_FLAGS) |
+                MDL.FLAG_MAPPED_TO_SYSTEM_VA);
+            return mappedAddress;
+        },
+        // MmUnmapLockedPages(va, mdl): limpa a flag de mapeado
+        (_virtualAddress, mdlPointer) => {
+            const MDL = NtAbi.MDL;
+            GuestMemory.writeGuest16(mdlPointer + MDL.MDL_FLAGS,
+                GuestMemory.readGuest16(mdlPointer + MDL.MDL_FLAGS) &
+                ~MDL.FLAG_MAPPED_TO_SYSTEM_VA);
+            return 0;
+        },
     ],
 };

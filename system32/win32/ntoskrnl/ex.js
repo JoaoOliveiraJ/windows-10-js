@@ -5,6 +5,7 @@
 const GuestMemory = require('win32/guest-memory');
 const FastMutex = require('ntos/ke/fast-mutex');
 const Resource = require('ntos/ex/resource');
+const Lookaside = require('ntos/ex/lookaside');
 
 module.exports = {
     names: [
@@ -31,6 +32,11 @@ module.exports = {
         'ExAcquireRundownProtection',
         'ExReleaseRundownProtection',
         'ExRundownCompleted',
+        'ExInitializePagedLookasideList',
+        'ExAllocateFromPagedLookasideList',
+        'ExFreeToPagedLookasideList',
+        'ExDeletePagedLookasideList',
+        'ExGetPreviousMode',
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -92,5 +98,16 @@ module.exports = {
             GuestMemory.writeGuest32(rundownPointer, (count | 1) >>> 0);
             return 0;
         },
+        // ExInitializePagedLookasideList(list, alloc, free, flags, size, tag, depth)
+        (listPointer, _allocRoutine, _freeRoutine, _flags, blockSize, tag,
+         depth) => Lookaside.initialize(listPointer, blockSize, tag, depth),
+        // ExAllocateFromPagedLookasideList(listPtr)
+        (listPointer) => Lookaside.allocate(listPointer),
+        // ExFreeToPagedLookasideList(listPtr, blockPtr)
+        (listPointer, blockPointer) => Lookaside.free(listPointer, blockPointer),
+        // ExDeletePagedLookasideList(listPtr)
+        (listPointer) => Lookaside.deleteList(listPointer),
+        // ExGetPreviousMode() -> KernelMode (0): nossos drivers rodam em kernel
+        () => 0,
     ],
 };
