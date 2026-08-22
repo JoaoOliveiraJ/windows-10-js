@@ -36,6 +36,8 @@ function run(cmd, args) {
     try {
         execFileSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
+        // cl.exe/report de ferramentas sai no STDOUT — mostrar os dois
+        if (e.stdout) process.stderr.write(e.stdout.toString());
         process.stderr.write(e.stderr ? e.stderr.toString() : String(e));
         console.error(`\nFALHA: ${path.basename(cmd)} ${args.join(' ')}`);
         process.exit(1);

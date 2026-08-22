@@ -248,11 +248,19 @@ function run() {
            (filterStats.status >>> 0).toString(16) +
            ' resultado="' + filterStats.result + '"');
 
-    // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS
+    // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS.
+    // Com handle ABERTO o unload e recusado (refcount, como o NT de verdade).
     Ntoskrnl.loadDriver('/lifecycle.sys');
     assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');
     assert(ObjectManager.lookup('\\DosDevices\\LifeCycle'), 'lifecycle link criado');
-    assert(Ntoskrnl.unloadDriver('lifecycle'), 'unloadDriver');
+    {
+        const lifeHandle = IoManager.openDevice('\\Device\\LifeCycle');
+        assert(lifeHandle.status === IoManager.STATUS.SUCCESS, 'handle aberto no lifecycle');
+        assert(Ntoskrnl.unloadDriver('lifecycle') === false,
+               'unload RECUSADO com handle aberto (refcount)');
+        IoManager.closeDevice(lifeHandle.handle);
+        assert(Ntoskrnl.unloadDriver('lifecycle'), 'unloadDriver apos fechar handle');
+    }
     assert(!ObjectManager.lookup('\\Device\\LifeCycle'),
            'device removido no unload');
     assert(!ObjectManager.lookup('\\Driver\\lifecycle'),
@@ -304,6 +312,19 @@ function run() {
            fileIoRead.result + '"');
     assert(IoManager.closeDevice(opened.handle) === IoManager.STATUS.SUCCESS,
            'IRP_MJ_CLOSE no driver nativo');
+
+    // grupo 17: ExAllocatePool2 + Ob* refcount + IRP_MJ_CLEANUP
+    Ntoskrnl.loadDriver('/guards.sys');
+    assert(ObjectManager.lookup('\\Device\\Guards'), 'guards device criado');
+    {
+        const g1 = IoManager.openDevice('\\Device\\Guards');
+        const g2 = IoManager.openDevice('\\Device\\Guards');
+        assert(g1.handle > 0 && g2.handle > 0 && g1.handle !== g2.handle,
+               'dois handles independentes (dois CREATE)');
+        assert(IoManager.closeDevice(g1.handle) === 0, 'close 1 (CLEANUP+CLOSE)');
+        assert(IoManager.closeDevice(g2.handle) === 0, 'close 2 (CLEANUP+CLOSE)');
+    }
+    checkNativeDriver('\\Device\\Guards', 'guards-ok');
 
     os.debugPrint('SELFTEST_OK');
 }

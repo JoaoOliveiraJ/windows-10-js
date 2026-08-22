@@ -22,6 +22,7 @@ const IRP_MJ = {
     READ:           0x03,
     WRITE:          0x04,
     DEVICE_CONTROL: 0x0E,
+    CLEANUP:        0x12,
     POWER:          0x16,
     PNP:            0x1B,
 };
@@ -242,20 +243,33 @@ function openDevice(devicePath) {
         GuestMemory.guestFreeBytes(fileObjectPointer);
         return { status: ioRequest.status, handle: 0 };
     }
+    // handle aberto referencia o device (ObReferenceObject) — protege o
+    // driver de unload enquanto houver handles (como o NT)
+    const refCountAddress = topPointer + NtAbi.DEVICE_OBJECT.REFERENCE_COUNT;
+    GuestMemory.writeGuest32(refCountAddress,
+                             GuestMemory.readGuest32(refCountAddress) + 1);
     const handle = nextDeviceHandle++;
-    openDeviceHandles.set(handle, { device, fileObjectPointer });
+    openDeviceHandles.set(handle, { device, fileObjectPointer, topPointer });
     return { status: STATUS.SUCCESS, handle };
 }
 
 function closeDevice(handle) {
     const entry = openDeviceHandles.get(handle);
     if (!entry) return STATUS.NOT_FOUND;
-    const ioRequest = makeIoRequest(IRP_MJ.CLOSE, {});
-    ioRequest.fileObjectPointer = entry.fileObjectPointer;
-    callDriver('\\Device\\' + entry.device.name, ioRequest);
+    // ordem do NT: IRP_MJ_CLEANUP (ultimo handle do file object) e depois CLOSE
+    const cleanupRequest = makeIoRequest(IRP_MJ.CLEANUP, {});
+    cleanupRequest.fileObjectPointer = entry.fileObjectPointer;
+    callDriver('\\Device\\' + entry.device.name, cleanupRequest);
+    const closeRequest = makeIoRequest(IRP_MJ.CLOSE, {});
+    closeRequest.fileObjectPointer = entry.fileObjectPointer;
+    callDriver('\\Device\\' + entry.device.name, closeRequest);
+    // solta a referencia do handle
+    const refCountAddress = entry.topPointer + NtAbi.DEVICE_OBJECT.REFERENCE_COUNT;
+    GuestMemory.writeGuest32(refCountAddress,
+                             GuestMemory.readGuest32(refCountAddress) - 1);
     openDeviceHandles.delete(handle);
     GuestMemory.guestFreeBytes(entry.fileObjectPointer);
-    return ioRequest.status;
+    return closeRequest.status;
 }
 
 // I/O num handle aberto (CREATE ja feito; o FILE_OBJECT e o do handle)

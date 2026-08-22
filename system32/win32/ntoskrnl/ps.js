@@ -9,6 +9,8 @@ module.exports = {
     names: [
         'PsCreateSystemThread',
         'PsTerminateSystemThread',
+        'PsGetCurrentThreadId',     // () -> handle da thread nativa corrente
+        'PsGetCurrentProcessId',    // () -> 0 (processo System, como o NT)
     ],
     handlers: [
         // PsCreateSystemThread(outHandlePtr, access, objAttrs, procHandle,
@@ -21,5 +23,9 @@ module.exports = {
         },
         // PsTerminateSystemThread(status)
         (_status) => KernelThreads.terminateCurrentThread(),
+        // PsGetCurrentThreadId()
+        () => KernelThreads.getCurrentThreadHandle(),
+        // PsGetCurrentProcessId(): drivers rodam no contexto do System (0)
+        () => 0,
     ],
 };

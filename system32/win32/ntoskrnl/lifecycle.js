@@ -77,10 +77,22 @@ function loadDriver(filePath) {
 }
 
 // descarrega DE VERDADE: DriverUnload (se registrada), remove devices+driver
-// do namespace e libera a memoria do driver object
+// do namespace e libera a memoria do driver object. Como no NT, RECUSA o
+// unload se algum device do driver tiver referencias vivas (handles abertos).
 function unloadDriver(driverName) {
     const node = ObjectManager.lookup('\\Driver\\' + driverName);
     if (!node || !node.data.native) return false;
+    for (const device of node.data.devices) {
+        const devicePointer = device.data.nativeDevicePointer;
+        const refCount = GuestMemory.readGuest32(devicePointer +
+                                                 NtAbi.DEVICE_OBJECT.REFERENCE_COUNT) | 0;
+        if (refCount > 1) {
+            os.debugPrint('[ntoskrnl] unload de ' + driverName +
+                          ' RECUSADO: \\Device\\' + device.name +
+                          ' tem ' + (refCount - 1) + ' handle(s) aberto(s)');
+            return false;
+        }
+    }
     const driverObjectPointer = node.data.driverObjectPointer;
     const unloadRoutine = GuestMemory.readGuest64(driverObjectPointer + DRV.DRIVER_UNLOAD);
     if (unloadRoutine) os.execMsAbi(unloadRoutine, driverObjectPointer, 0);

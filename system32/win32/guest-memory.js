@@ -42,8 +42,10 @@ function writeGuest64(address, value) {
     writeGuest32(address + 4, Math.floor(value / 0x100000000) >>> 0);
 }
 
-// aloca `size` bytes alinhados a `align`; retorna endereco fisico ou 0
-function guestAllocAligned(size, align) {
+// aloca `size` bytes alinhados a `align`; retorna endereco fisico ou 0.
+// zero=true (padrao) zera o bloco; zero=false devolve o conteudo antigo
+// (ExAllocatePoolUninitialized de verdade: lixo de frees anteriores).
+function guestAllocAligned(size, align, zero) {
     if (!heapReady) initGuestHeap();
     let block = arenaBase;
     while (block) {
@@ -74,9 +76,9 @@ function guestAllocAligned(size, align) {
                 } else {
                     writeBlock(block, readBlockSize(block), readBlockNext(block), 0);
                 }
-                // bloco devolvido sempre zerado
-                for (let i = 0; i < size; i += 4)
-                    writeGuest32(block + BLOCK_HEADER_SIZE + i, 0);
+                if (zero !== false)
+                    for (let i = 0; i < size; i += 4)
+                        writeGuest32(block + BLOCK_HEADER_SIZE + i, 0);
                 return block + BLOCK_HEADER_SIZE;
             }
         }
@@ -85,8 +87,9 @@ function guestAllocAligned(size, align) {
     return 0;   // sem memoria
 }
 
-function guestAllocPage()  { return guestAllocAligned(0x1000, 0x1000); }
-function guestAllocBytes(size) { return guestAllocAligned(size, 16); }
+function guestAllocPage()  { return guestAllocAligned(0x1000, 0x1000, true); }
+function guestAllocBytes(size) { return guestAllocAligned(size, 16, true); }
+function guestAllocRaw(size)   { return guestAllocAligned(size, 16, false); }
 
 function guestFreeBytes(pointer) {
     if (!pointer) return;
@@ -100,6 +103,6 @@ function guestFreeBytes(pointer) {
     }
 }
 
-module.exports = { guestAllocPage, guestAllocBytes, guestFreeBytes,
+module.exports = { guestAllocPage, guestAllocBytes, guestAllocRaw, guestFreeBytes,
                    readGuest8, readGuest16, readGuest32, readGuest64,
                    writeGuest8, writeGuest16, writeGuest32, writeGuest64 };
