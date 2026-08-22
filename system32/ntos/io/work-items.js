@@ -61,6 +61,7 @@ function unqueue(itemPointer) {
 // drena a fila a PASSIVE_LEVEL (como as worker threads do NT):
 // PIO_WORKITEM_ROUTINE    = void (PDEVICE_OBJECT deviceObject, PVOID context)
 // PIO_WORKITEM_ROUTINE_EX = void (PVOID ioObject, PVOID context, PIO_WORKITEM)
+// WORKER (ExQueueWorkItem) = void (PVOID context)
 function runQueue() {
     while (workQueue.length > 0) {
         const entry = workQueue.shift();
@@ -69,14 +70,37 @@ function runQueue() {
         const routine = readField(itemPointer, WORKITEM.FUNCTION);
         const deviceObject = readField(itemPointer, WORKITEM.DEVICE_OBJECT);
         const context = readField(itemPointer, WORKITEM.CONTEXT);
-        if (readField(itemPointer, WORKITEM.TYPE) & 0x80000000)
+        const itemType = readField(itemPointer, WORKITEM.TYPE);
+        if (itemType & 0x80000000)
             os.execMsAbi(routine, deviceObject, context, itemPointer);
+        else if (itemType & 0x40000000)
+            os.execMsAbi(routine, context);
         else
             os.execMsAbi(routine, deviceObject, context);
     }
 }
 
+// ExInitializeWorkItem(itemPtr, routinePtr, contextPtr): WORK_QUEUE_ITEM do
+// modelo Ex (a routine recebe so o context — 1 arg)
+function initializeExWorkItem(itemPointer, routinePointer, contextPointer) {
+    writeField(itemPointer, WORKITEM.LIST_FLINK, 0);
+    writeField(itemPointer, WORKITEM.LIST_BLINK, 0);
+    writeField(itemPointer, WORKITEM.FUNCTION, routinePointer);
+    writeField(itemPointer, WORKITEM.CONTEXT, contextPointer);
+    writeField(itemPointer, WORKITEM.DEVICE_OBJECT, 0);
+    writeField(itemPointer, WORKITEM.QUEUED, 0);
+}
+
+// ExQueueWorkItem(itemPtr, queueType)
+function queueExWorkItem(itemPointer, queueType) {
+    if (readField(itemPointer, WORKITEM.QUEUED)) return;
+    writeField(itemPointer, WORKITEM.TYPE, (queueType >>> 0) | 0x40000000);
+    writeField(itemPointer, WORKITEM.QUEUED, 1);
+    workQueue.push({ itemPointer });
+}
+
 function pending() { return workQueue.length; }
 
-module.exports = { createWorkItem, queueWorkItem, queueWorkItemEx, unqueue,
+module.exports = { createWorkItem, queueWorkItem, queueWorkItemEx,
+                   initializeExWorkItem, queueExWorkItem, unqueue,
                    runQueue, pending };

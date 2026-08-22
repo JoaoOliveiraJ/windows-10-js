@@ -70,12 +70,13 @@ uint64_t js_win32_dispatch(uint64_t id, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5,
                            uint64_t a6, uint64_t a7, uint64_t a8,
                            uint64_t a9, uint64_t a10, uint64_t a11,
-                           uint64_t a12) {
-    JSValue global, table, handle, args[13], ret;
+                           uint64_t a12, uint64_t a13, uint64_t a14) {
+    JSValue global, table, handle, args[15], ret;
     const char *tableName;
     int64_t r = 0;
     int i;
-    uint64_t raw[13] = { id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12 };
+    uint64_t raw[15] = { id, a1, a2, a3, a4, a5, a6, a7, a8, a9,
+                         a10, a11, a12, a13, a14 };
 
     if (!g_ctx) return 0;
     if (id >= 32) {
@@ -88,16 +89,16 @@ uint64_t js_win32_dispatch(uint64_t id, uint64_t a1, uint64_t a2,
     table = JS_GetPropertyStr(g_ctx, global, tableName);
     if (!JS_IsObject(table)) { JS_FreeValue(g_ctx, table); JS_FreeValue(g_ctx, global); return 0; }
     handle = JS_GetPropertyStr(g_ctx, table, "handle");
-    for (i = 0; i < 13; i++)
+    for (i = 0; i < 15; i++)
         args[i] = JS_NewFloat64(g_ctx, (double)raw[i]);
-    ret = JS_Call(g_ctx, handle, table, 13, (JSValueConst *)args);
+    ret = JS_Call(g_ctx, handle, table, 15, (JSValueConst *)args);
     if (JS_IsException(ret)) {
         jsos_dump_exception(g_ctx);
     } else {
         JS_ToInt64(g_ctx, &r, ret);
     }
     JS_FreeValue(g_ctx, ret);
-    for (i = 0; i < 13; i++) JS_FreeValue(g_ctx, args[i]);
+    for (i = 0; i < 15; i++) JS_FreeValue(g_ctx, args[i]);
     JS_FreeValue(g_ctx, handle);
     JS_FreeValue(g_ctx, table);
     JS_FreeValue(g_ctx, global);

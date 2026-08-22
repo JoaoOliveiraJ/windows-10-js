@@ -6,6 +6,7 @@ const GuestMemory = require('win32/guest-memory');
 const FastMutex = require('ntos/ke/fast-mutex');
 const Resource = require('ntos/ex/resource');
 const Lookaside = require('ntos/ex/lookaside');
+const WorkItems = require('ntos/io/work-items');
 
 module.exports = {
     names: [
@@ -39,6 +40,8 @@ module.exports = {
         'ExFreeToPagedLookasideList',
         'ExDeletePagedLookasideList',
         'ExGetPreviousMode',
+        'ExInitializeWorkItem',           // (itemPtr, routinePtr, contextPtr)
+        'ExQueueWorkItem',                // (itemPtr, queueType)
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -117,5 +120,17 @@ module.exports = {
         (listPointer) => Lookaside.deleteList(listPointer),
         // ExGetPreviousMode() -> KernelMode (0): nossos drivers rodam em kernel
         () => 0,
+        // ExInitializeWorkItem(itemPtr, routinePtr, contextPtr): WORK_QUEUE_ITEM
+        // — a routine recebe so o contexto (modelo Ex, 1 arg)
+        (itemPointer, routinePointer, contextPointer) => {
+            WorkItems.initializeExWorkItem(itemPointer, routinePointer,
+                                           contextPointer);
+            return 0;
+        },
+        // ExQueueWorkItem(itemPtr, queueType)
+        (itemPointer, queueType) => {
+            WorkItems.queueExWorkItem(itemPointer, queueType);
+            return 0;
+        },
     ],
 };

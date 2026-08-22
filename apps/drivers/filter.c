@@ -70,16 +70,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) 
     PFILE_OBJECT echoFileObject = NULL;
     PDEVICE_OBJECT echoDevice = NULL;
     NTSTATUS status;
+    ULONG majorIndex;
     (void)registryPath;
     DbgPrint("filter.sys: DriverEntry\r\n");
 
     status = JsosCreateDevice(driverObject, L"\\Device\\Filter");
     if (!NT_SUCCESS(status)) return status;
-    filterDeviceObject = NULL;
-    {
-        /* pega o PDEVICE_OBJECT recem-criado (unico device do driver) */
-        filterDeviceObject = driverObject->DeviceObject;
-    }
+    filterDeviceObject = driverObject->DeviceObject;
 
     /* resolve o alvo e anexa no topo da pilha do Echo */
     RtlInitUnicodeString(&echoName, L"\\Device\\Echo");
@@ -90,10 +87,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) 
                                                    echoDevice);
     if (!callTargetDevice) return STATUS_NO_SUCH_DEVICE;
 
+    /* padrao WDM real: TUDO desce a pilha por padrao; so READ/WRITE ganham
+     * completion e DEVICE_CONTROL atende o IOCTL de stats localmente */
+    for (majorIndex = 0; majorIndex <= IRP_MJ_MAXIMUM_FUNCTION; majorIndex++)
+        driverObject->MajorFunction[majorIndex] = filterForwardDown;
     driverObject->MajorFunction[IRP_MJ_READ] = filterPassThrough;
     driverObject->MajorFunction[IRP_MJ_WRITE] = filterPassThrough;
-    driverObject->MajorFunction[IRP_MJ_PNP] = filterForwardDown;
-    driverObject->MajorFunction[IRP_MJ_POWER] = filterForwardDown;
     driverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = filterControl;
     return STATUS_SUCCESS;
 }

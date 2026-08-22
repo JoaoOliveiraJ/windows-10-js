@@ -35,7 +35,7 @@ win32_stub_max: dq MAX_WIN32    ; lido pelo host (os.getWin32ThunkCount)
 align 16
 win32_common:
     ; entrada: rax = id; rcx,rdx,r8,r9 = args 1-4; args 5-12 na pilha do
-    ; convidado (apos o shadow space): [rsp+40]=a5 ... [rsp+96]=a12
+; convidado (apos o shadow space): [rsp+40]=a5 ... [rsp+78]=a14
     push rbp
     mov rbp, rsp
     ; MS ABI trata rsi/rdi/rbx/r12-r15 como nao-volateis (callee-saved);
@@ -49,15 +49,17 @@ win32_common:
     push r15
     and rsp, -16
 
-    ; SysV: rdi=id rsi=a1 rdx=a2 rcx=a3 r8=a4 r9=a5, pilha: a6..a12
+    ; SysV: rdi=id rsi=a1 rdx=a2 rcx=a3 r8=a4 r9=a5, pilha: a6..a14
     mov rdi, rax                ; id
     mov rsi, rcx                ; a1
     ; rdx = a2 (inalterado)
     mov rcx, r8                 ; a3
     mov r8, r9                  ; a4
     mov r9, [rbp + 48]          ; a5 (pilha do convidado)
-    ; empilha a6..a12 (ordem reversa; +1 pad p/ manter rsp 16-alinhado)
+    ; empilha a6..a14 (ordem reversa; +1 pad p/ manter rsp 16-alinhado)
     push qword 0                ; pad de alinhamento
+    push qword [rbp + 120]      ; a14
+    push qword [rbp + 112]      ; a13
     push qword [rbp + 104]      ; a12
     push qword [rbp + 96]       ; a11
     push qword [rbp + 88]       ; a10
@@ -67,7 +69,7 @@ win32_common:
     push qword [rbp + 56]       ; a6 -> [rsp] na entrada do callee
 
     call js_win32_dispatch
-    add rsp, 64
+    add rsp, 80
 
     lea rsp, [rbp - 56]         ; descarta o alinhamento, volta aos regs salvos
     pop r15

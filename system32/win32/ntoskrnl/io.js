@@ -15,6 +15,7 @@ const IoManager = require('ntos/io/io-manager');
 const IoTimer = require('ntos/io/io-timer');
 const KernelThreads = require('ntos/ps/kernel-threads');
 const Process = require('ntos/ps/process');
+const Zw = require('win32/ntoskrnl/zw');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -185,7 +186,8 @@ module.exports = {
         'IoCancelIrp',                    // (irpPtr) — cancela de verdade
         'IoAllocateDriverObjectExtension',   // (drvObj, tag, size, outPtr)
         'IoGetDriverObjectExtension',        // (drvObj, tag) -> extPtr
-        'IoGetCurrentProcess',               // () -> pseudo-EPROCESS (System)
+        'IoGetCurrentProcess',               // () -> thread corrente -> ApcState.Process
+        'IoCreateFile',                      // 14 args (abertura completa por nome)
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -370,5 +372,17 @@ module.exports = {
         // IoGetCurrentProcess(): o MESMO caminho do NT — thread corrente ->
         // KTHREAD.ApcState.Process (offsets RE do ntoskrnl Win10 22H2)
         () => Process.getCurrentProcess(),
+        // IoCreateFile(outHandle, access, objAttrs, ioStatus, allocSize,
+        //              fileAttrs, share, createDisp, createOpts, eaBuf, eaLen,
+        //              fileType, internalParams, options) — abertura completa
+        // por nome: dispositivos via CREATE IRP, arquivos via ZwCreateFile
+        (outHandlePointer, desiredAccess, objectAttributesPointer,
+         ioStatusPointer, allocationSize, fileAttributes, shareAccess,
+         createDisposition, createOptions, eaBuffer, eaLength, _fileType,
+         _internalParams, _options) =>
+            Zw.zwCreateFile(
+                outHandlePointer, desiredAccess, objectAttributesPointer,
+                ioStatusPointer, allocationSize, fileAttributes, shareAccess,
+                createDisposition, createOptions, eaBuffer, eaLength),
     ],
 };

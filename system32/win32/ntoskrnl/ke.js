@@ -42,6 +42,7 @@ let criticalRegionCount = 0;
 module.exports = {
     names: [
         'DbgPrint',
+        'DbgPrintEx',
         'KeQuerySystemTime',
         'KeQueryTickCount',
         'KeGetCurrentIrql',
@@ -95,6 +96,16 @@ module.exports = {
             const formatted = formatGuestText(formatText,
                 [arg1, arg2, arg3, arg4, arg5, arg6]);
             os.debugPrint('[driver] ' + formatted.replace(/\r?\n$/, ''));
+            return 0;
+        },
+        // DbgPrintEx(componentId, level, formatPtr, args...): idem com
+        // componente/nivel (o filtro por nivel existe de verdade)
+        (componentId, level, formatPointer, arg1, arg2, arg3, arg4, arg5) => {
+            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const formatted = formatGuestText(formatText,
+                [arg1, arg2, arg3, arg4, arg5]);
+            os.debugPrint('[driver:' + (componentId >>> 0) + '] ' +
+                          formatted.replace(/\r?\n$/, ''));
             return 0;
         },
         // KeQuerySystemTime(out u64): intervalos de 100ns desde 1601

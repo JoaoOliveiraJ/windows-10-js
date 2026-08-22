@@ -408,6 +408,13 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\ListSync'), 'listsync device criado');
     checkNativeDriver('\\Device\\ListSync', 'listsync-ok');
 
+    // grupo 28: IoCreateFile por nome + Zw* em dispositivo (IRPs reais),
+    // DbgPrintEx e work item Ex (1 arg)
+    Ntoskrnl.loadDriver('/openx.sys');
+    assert(ObjectManager.lookup('\\Device\\OpenX'), 'openx device criado');
+    for (let i = 0; i < 10; i++) { Ntoskrnl.runKernelTasks(); Scheduler.tick(); }
+    checkNativeDriver('\\Device\\OpenX', 'openx-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

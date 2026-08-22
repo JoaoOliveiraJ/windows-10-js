@@ -9,6 +9,7 @@ const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
 const Registry = require('ntos/cm/registry');
 const ObjectManager = require('ntos/ob/object-manager');
+const IoManager = require('ntos/io/io-manager');
 
 const STATUS_NOT_FOUND = 0xC0000009;
 const STATUS_BUFFER_TOO_SMALL = 0xC0000023;
@@ -68,11 +69,31 @@ function writeFileBytes(fs, fsPath, bytes) {
 
 // ZwCreateFile(handleOut, access, objAttrs, ioStatus, allocSize, fileAttrs,
 //              shareAccess, createDisposition, createOptions, eaBuf, eaLen)
+// Resolve no namespace: arquivo em FS montado (ramfs/NTFS) OU dispositivo
+// (abertura real via IRP_MJ_CREATE, como o NT faz para \Device\X)
 function zwCreateFile(outHandlePointer, _desiredAccess, objectAttributesPointer,
                       ioStatusPointer, _allocationSize, _fileAttributes,
                       _shareAccess, createDisposition, _createOptions,
                       _eaBuffer, _eaLength) {
     const objectName = keyPathFromObjectAttributes(objectAttributesPointer);
+
+    // dispositivo: abre com CREATE IRP pelo I/O manager (caminho nativo)
+    const deviceNode = ObjectManager.lookup(objectName);
+    if (deviceNode && deviceNode.type === 'Device') {
+        const opened = IoManager.openDevice(objectName);
+        if (opened.status !== 0) {
+            writeIoStatus(ioStatusPointer, 0xC0000034, 0);
+            return 0xC0000034 | 0;
+        }
+        const handle = nextFileHandle++;
+        fileHandles.set(handle, { devicePath: objectName,
+                                  deviceHandle: opened.handle });
+        GuestMemory.writeGuest32(outHandlePointer, handle >>> 0);
+        GuestMemory.writeGuest32(outHandlePointer + 4, 0);
+        writeIoStatus(ioStatusPointer, 0, FILE_OPENED);
+        return 0;
+    }
+
     const target = resolveMountedFile(objectName);
     if (!target) {
         writeIoStatus(ioStatusPointer, STATUS_OBJECT_NAME_NOT_FOUND, 0);
@@ -127,6 +148,19 @@ function zwReadFile(fileHandle, _event, _apcRoutine, _apcContext, ioStatusPointe
                     bufferPointer, length, byteOffsetPointer, _key) {
     const entry = fileHandles.get(fileHandle >>> 0);
     if (!entry) return STATUS_INVALID_HANDLE | 0;
+
+    // handle de DISPOSITIVO: READ IRP real com o FILE_OBJECT do handle
+    if (entry.deviceHandle) {
+        const ioRequest = IoManager.readHandle(entry.deviceHandle);
+        if (ioRequest.status !== 0) return 0xC000000D | 0;
+        const count = Math.min(length >>> 0, ioRequest.info);
+        for (let i = 0; i < count; i++)
+            GuestMemory.writeGuest8(bufferPointer + i,
+                                    ioRequest.result.charCodeAt(i) & 0xFF);
+        writeIoStatus(ioStatusPointer, 0, count);
+        return 0;
+    }
+
     const bytes = readFileBytes(entry.fs, entry.fsPath);
     if (bytes === null) return STATUS_OBJECT_NAME_NOT_FOUND | 0;
     let offset = 0;
@@ -150,6 +184,18 @@ function zwWriteFile(fileHandle, _event, _apcRoutine, _apcContext, ioStatusPoint
                      bufferPointer, length, byteOffsetPointer, _key) {
     const entry = fileHandles.get(fileHandle >>> 0);
     if (!entry) return STATUS_INVALID_HANDLE | 0;
+
+    // handle de DISPOSITIVO: WRITE IRP real
+    if (entry.deviceHandle) {
+        let data = '';
+        for (let i = 0; i < (length >>> 0); i++)
+            data += String.fromCharCode(GuestMemory.readGuest8(bufferPointer + i));
+        const ioRequest = IoManager.writeHandle(entry.deviceHandle, data);
+        if (ioRequest.status !== 0) return 0xC000000D | 0;
+        writeIoStatus(ioStatusPointer, 0, ioRequest.info);
+        return 0;
+    }
+
     if (typeof entry.fs.write !== 'function')
         return STATUS_MEDIA_WRITE_PROTECTED | 0;
     const current = readFileBytes(entry.fs, entry.fsPath) || [];
@@ -233,8 +279,15 @@ module.exports = {
             return 0;
         },
         // ZwClose(handle): fecha handle de arquivo OU de chave de registry
+        // OU de dispositivo (CLEANUP+CLOSE IRPs, como o NT)
         (anyHandle) => {
-            if (fileHandles.delete(anyHandle >>> 0)) return 0;
+            const fileEntry = fileHandles.get(anyHandle >>> 0);
+            if (fileEntry) {
+                fileHandles.delete(anyHandle >>> 0);
+                if (fileEntry.deviceHandle)
+                    IoManager.closeDevice(fileEntry.deviceHandle);
+                return 0;
+            }
             return Registry.closeHandle(anyHandle) ? 0 : STATUS_INVALID_HANDLE;
         },
         // ZwCreateFile(handleOut, access, objAttrs, ioStatus, allocSize,
@@ -352,4 +405,6 @@ module.exports = {
             return 0;
         },
     ],
+    // compartilhado com o grupo io.js (IoCreateFile delega arquivos p/ ca)
+    zwCreateFile,
 };
