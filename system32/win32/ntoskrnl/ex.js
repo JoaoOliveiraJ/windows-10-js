@@ -3,6 +3,7 @@
 // ===========================================================================
 
 const GuestMemory = require('win32/guest-memory');
+const FastMutex = require('ntos/ke/fast-mutex');
 
 module.exports = {
     names: [
@@ -13,6 +14,10 @@ module.exports = {
         'ExAllocatePoolZero',  // (POOL_FLAGS u64, size, tag) — idem zerado
         'ExAllocatePoolUninitialized',
         'ExFreePool2',         // (pointer, tag) — WDK moderno
+        'ExInitializeFastMutex',
+        'ExAcquireFastMutex',
+        'ExTryToAcquireFastMutex',
+        'ExReleaseFastMutex',
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -31,5 +36,16 @@ module.exports = {
         (_poolFlags, size, _tag) => GuestMemory.guestAllocRaw(size),
         // ExFreePool2(pointer, tag)
         (pointer, _tag) => { GuestMemory.guestFreeBytes(pointer); return 0; },
+        // ExInitializeFastMutex(fastMutexPtr)
+        (fastMutexPointer) => {
+            FastMutex.initialize(fastMutexPointer);
+            return 0;
+        },
+        // ExAcquireFastMutex(fastMutexPtr)
+        (fastMutexPointer) => { FastMutex.acquire(fastMutexPointer); return 0; },
+        // ExTryToAcquireFastMutex(fastMutexPtr) -> 1 se tomou
+        (fastMutexPointer) => FastMutex.tryAcquire(fastMutexPointer),
+        // ExReleaseFastMutex(fastMutexPtr)
+        (fastMutexPointer) => { FastMutex.release(fastMutexPointer); return 0; },
     ],
 };

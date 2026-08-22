@@ -39,6 +39,8 @@ module.exports = {
         'memset',
         'memcpy',
         'memmove',
+        'RtlUnicodeStringToInteger',
+        'RtlIntegerToUnicodeString',
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
@@ -173,6 +175,43 @@ module.exports = {
             for (let i = 0; i < count; i++)
                 GuestMemory.writeGuest8(destPointer + i, tmp[i]);
             return destPointer;
+        },
+        // RtlUnicodeStringToInteger(uniPtr, base, outU32Ptr): base 0 = auto
+        // (0x hex, 0 octal, 0b binario); semantica real do NT
+        (unicodePointer, base, outputPointer) => {
+            let text = GuestStrings.readUnicodeString(unicodePointer).trim();
+            let effectiveBase = base >>> 0;
+            let negative = false;
+            if (text.startsWith('-')) { negative = true; text = text.slice(1); }
+            if (effectiveBase === 0) {
+                if (/^0x/i.test(text)) { effectiveBase = 16; text = text.slice(2); }
+                else if (/^0b/i.test(text)) { effectiveBase = 2; text = text.slice(2); }
+                else if (/^0o/i.test(text)) { effectiveBase = 8; text = text.slice(2); }
+                else if (/^0[0-7]/.test(text)) { effectiveBase = 8; text = text.slice(1); }
+                else effectiveBase = 10;
+            }
+            const parsed = parseInt(text, effectiveBase);
+            if (isNaN(parsed)) return 0xC000000D | 0;   // STATUS_INVALID_PARAMETER
+            const value = ((negative ? -parsed : parsed) >>> 0);
+            GuestMemory.writeGuest32(outputPointer, value);
+            return 0;
+        },
+        // RtlIntegerToUnicodeString(value, base, uniPtr): escreve no buffer da
+        // UNICODE_STRING (respeita MaximumLength; STATUS_BUFFER_OVERFLOW real)
+        (value, base, unicodePointer) => {
+            const effectiveBase = base >>> 0 || 10;
+            if (![2, 8, 10, 16].includes(effectiveBase))
+                return 0xC000000D | 0;
+            const text = (value >>> 0).toString(effectiveBase);
+            const maxChars = GuestMemory.readGuest16(unicodePointer + 2) / 2;
+            if (text.length + 1 > maxChars)
+                return 0x80000005 | 0;   // STATUS_BUFFER_OVERFLOW
+            const buffer = GuestMemory.readGuest32(unicodePointer + US.BUFFER);
+            for (let i = 0; i < text.length; i++)
+                GuestMemory.writeGuest16(buffer + i * 2, text.charCodeAt(i));
+            GuestMemory.writeGuest16(buffer + text.length * 2, 0);
+            GuestMemory.writeGuest16(unicodePointer, text.length * 2);
+            return 0;
         },
     ],
 };

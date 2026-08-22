@@ -72,6 +72,7 @@ module.exports = {
         'KeWaitForMultipleObjects',        // (count, objsPtr, waitType, reason, mode, alertable, timeoutPtr)
         'KeQueryPerformanceCounter',       // (outFreqPtr) -> contador TSC
         'KeStallExecutionProcessor',       // (microseconds) — espera ocupada real
+        'KeBugCheckEx',                    // (code, p1..p4) — para o sistema
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -229,6 +230,19 @@ module.exports = {
             const start = os.rdtsc();
             while (os.rdtsc() - start < ticksToStall) { /* stall real */ }
             return 0;
+        },
+        // KeBugCheckEx(code, p1, p2, p3, p4): parada fatal — como o NT, para
+        // a maquina imediatamente (nao retorna)
+        (bugCheckCode, param1, param2, param3, param4) => {
+            os.debugPrint('');
+            os.debugPrint('*** STOP (KeBugCheckEx): 0x' +
+                          (bugCheckCode >>> 0).toString(16).padStart(8, '0') +
+                          ' (0x' + (param1 >>> 0).toString(16) + ', 0x' +
+                          (param2 >>> 0).toString(16) + ', 0x' +
+                          (param3 >>> 0).toString(16) + ', 0x' +
+                          (param4 >>> 0).toString(16) + ')');
+            os.halt();
+            return 0;   // nao alcancado
         },
     ],
 };

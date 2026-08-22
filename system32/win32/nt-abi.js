@@ -135,6 +135,15 @@ module.exports = {
     // KEVENT (wdm.h x64) / KMUTEX
     KEVENT: { SIZE: 0x18 },
     KMUTEX: { SIZE: 0x38 },
+    // FAST_MUTEX (wdm.h x64, sizeof 0x38 — layout oficial)
+    FAST_MUTEX: {
+        COUNT: 0x00,             // LONG: 1 = livre, 0 = com dono
+        OWNER: 0x08,             // PVOID thread dona (handle, no nosso caso)
+        CONTENTION: 0x10,        // ULONG: vezes que houve contencao real
+        EVENT: 0x18,             // KEVENT embutido (espera em contencao)
+        OLD_IRQL: 0x30,          // ULONG (APC_LEVEL no acquire)
+        SIZE: 0x38,
+    },
     // KDPC (wdm.h x64, sizeof 0x40 — layout oficial)
     KDPC: {
         TYPE: 0x00,              // DpcObject = 19 (0x13)

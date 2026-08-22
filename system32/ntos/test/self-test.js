@@ -346,6 +346,12 @@ function run() {
     }
     checkNativeDriver('\\Device\\SyncIo', 'syncio-ok');
 
+    // grupo 20: FAST_MUTEX real, Rtl int<->string, work item EX (3 args)
+    Ntoskrnl.loadDriver('/fastres.sys');
+    assert(ObjectManager.lookup('\\Device\\FastRes'), 'fastres device criado');
+    for (let i = 0; i < 10; i++) { Ntoskrnl.runKernelTasks(); Scheduler.tick(); }
+    checkNativeDriver('\\Device\\FastRes', 'fastres-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

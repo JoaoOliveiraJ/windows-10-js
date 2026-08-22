@@ -35,10 +35,18 @@ function createWorkItem(devicePointer, itemPointer) {
 
 // IoQueueWorkItem(item, routine, queueType, context)
 function queueWorkItem(itemPointer, routinePointer, queueType, contextPointer) {
+    queueWorkItemEx(itemPointer, routinePointer, queueType, contextPointer, false);
+}
+
+// IoQueueWorkItemEx: routine e' IO_WORKITEM_ROUTINE_EX — (ioObject, context,
+// ioWorkItem), 3 args (bit alto do Type marca a convencao Ex)
+function queueWorkItemEx(itemPointer, routinePointer, queueType, contextPointer,
+                         isEx) {
     if (readField(itemPointer, WORKITEM.QUEUED)) return;   // ja na fila
     writeField(itemPointer, WORKITEM.FUNCTION, routinePointer);
     writeField(itemPointer, WORKITEM.CONTEXT, contextPointer);
-    writeField(itemPointer, WORKITEM.TYPE, queueType);
+    writeField(itemPointer, WORKITEM.TYPE,
+               (queueType >>> 0) | (isEx ? 0x80000000 : 0));
     writeField(itemPointer, WORKITEM.QUEUED, 1);
     workQueue.push({ itemPointer });
 }
@@ -50,18 +58,24 @@ function unqueue(itemPointer) {
 }
 
 // drena a fila a PASSIVE_LEVEL (como as worker threads do NT):
-// PIO_WORKITEM_ROUTINE = void (PDEVICE_OBJECT deviceObject, PVOID context)
+// PIO_WORKITEM_ROUTINE    = void (PDEVICE_OBJECT deviceObject, PVOID context)
+// PIO_WORKITEM_ROUTINE_EX = void (PVOID ioObject, PVOID context, PIO_WORKITEM)
 function runQueue() {
     while (workQueue.length > 0) {
         const entry = workQueue.shift();
         const itemPointer = entry.itemPointer;
         writeField(itemPointer, WORKITEM.QUEUED, 0);
-        os.execMsAbi(readField(itemPointer, WORKITEM.FUNCTION),
-                     readField(itemPointer, WORKITEM.DEVICE_OBJECT),
-                     readField(itemPointer, WORKITEM.CONTEXT));
+        const routine = readField(itemPointer, WORKITEM.FUNCTION);
+        const deviceObject = readField(itemPointer, WORKITEM.DEVICE_OBJECT);
+        const context = readField(itemPointer, WORKITEM.CONTEXT);
+        if (readField(itemPointer, WORKITEM.TYPE) & 0x80000000)
+            os.execMsAbi(routine, deviceObject, context, itemPointer);
+        else
+            os.execMsAbi(routine, deviceObject, context);
     }
 }
 
 function pending() { return workQueue.length; }
 
-module.exports = { createWorkItem, queueWorkItem, unqueue, runQueue, pending };
+module.exports = { createWorkItem, queueWorkItem, queueWorkItemEx, unqueue,
+                   runQueue, pending };

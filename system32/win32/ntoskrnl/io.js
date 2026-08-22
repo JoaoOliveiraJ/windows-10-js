@@ -169,6 +169,7 @@ module.exports = {
         'IoInitializeTimer',              // (dev, routinePtr, contextPtr)
         'IoStartTimer',
         'IoStopTimer',
+        'IoQueueWorkItemEx',              // (item, routineExPtr, queueType, contextPtr)
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -271,5 +272,12 @@ module.exports = {
         // IoStopTimer(devPtr)
         (devicePointer) =>
             require('ntos/io/io-timer').stopTimer(devicePointer),
+        // IoQueueWorkItemEx(itemPtr, routineExPtr, queueType, contextPtr):
+        // a routine recebe (ioObject, context, ioWorkItem) — 3 args
+        (itemPointer, routinePointer, queueType, contextPointer) => {
+            WorkItems.queueWorkItemEx(itemPointer, routinePointer, queueType,
+                                      contextPointer, true);
+            return 0;
+        },
     ],
 };
