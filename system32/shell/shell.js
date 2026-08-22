@@ -90,7 +90,7 @@ function cmdExec(args) {
     const buf = MemoryFileSystem.readBytes(normPath(args[0]));
     if (!buf) { Console.print('nao e PeLoader/binario ou nao existe: ' + args[0]); return; }
     try {
-        const entry = PeLoader.load(buf);
+        const entry = PeLoader.load(buf).entryPoint;
         os.execMachineCode(entry);
         Console.print('[pe] programa encerrado, de volta ao shell');
     } catch (e) {

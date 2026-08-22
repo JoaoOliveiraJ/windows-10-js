@@ -13,6 +13,7 @@ const ObjectManager = require('ntos/ob/object-manager');
 const MemoryFileSystem = require('ntos/fs/memory-file-system');
 const Registry = require('ntos/cm/registry');
 const Pfn = require('ntos/mm/pfn');
+const SharedUserData = require('ntos/mm/shared-user-data');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -37,6 +38,7 @@ function init() {
     os.debugPrint('[boot] fase 0: nanokernel + objetos + registry');
     Interrupts.init();
     Pfn.init();                 // memory manager: alocador de frames fisicos
+    SharedUserData.init();      // pagina KUSER_SHARED_DATA mapeada (drivers WDK)
 
     ObjectManager.createDirectory('\\Device');
     ObjectManager.createDirectory('\\Driver');

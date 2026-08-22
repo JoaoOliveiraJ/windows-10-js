@@ -107,12 +107,41 @@ if (existsSync(helloC)) {
         helloC, '-lkernel32', '-o', path.join(buildDir, 'hello.exe')]);
 }
 
-/* 0b. drivers .sys: a tabela de exports vem de system32/win32/ntoskrnl.js
- * (fonte unica de verdade - a ORDEM la define os ids). zig dlltool gera a
- * import library; cada apps/drivers/*.c vira um .sys compilado. */
-const ntoskrnlSource = readFileSync(path.join(root, 'system32', 'win32', 'ntoskrnl.js'), 'utf8');
-const exportNamesMatch = ntoskrnlSource.match(/const exportNames = \[([\s\S]*?)\]/);
-const ntoskrnlExports = [...exportNamesMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+/* 0b. drivers .sys com MSVC + WDK REAL (cl.exe + link.exe + ntddk.h).
+ * A tabela de exports sai dos grupos win32/ntoskrnl/*.js na ordem de
+ * groups.js (fonte unica da ABI). Fallback p/ zig se MSVC/WDK ausente. */
+function newestSubdir(parent, versionOnly) {
+    if (!existsSync(parent)) return null;
+    const entries = readdirSync(parent)
+        .filter(d => { try { return statSync(path.join(parent, d)).isDirectory(); } catch { return false; } })
+        .filter(d => !versionOnly || /^\d+\.\d+\.\d+\.\d+$/.test(d))
+        .sort();
+    return entries.length ? path.join(parent, entries[entries.length - 1]) : null;
+}
+
+// nomes dos exports na ordem da ABI (grupos na ordem de groups.js)
+const groupsSource = readFileSync(path.join(root, 'system32', 'win32', 'ntoskrnl', 'groups.js'), 'utf8');
+const groupNames = [...groupsSource.match(/\[([\s\S]*?)\]/)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+const ntoskrnlExports = [];
+for (const group of groupNames) {
+    const groupSource = readFileSync(path.join(root, 'system32', 'win32', 'ntoskrnl', group + '.js'), 'utf8');
+    const namesMatch = groupSource.match(/names:\s*\[([\s\S]*?)\]/);
+    ntoskrnlExports.push(...[...namesMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]));
+}
+
+const vsEditionsDir = 'C:/Program Files/Microsoft Visual Studio/2022';
+const vsEdition = newestSubdir(vsEditionsDir);
+const msvcTools = vsEdition ? newestSubdir(path.join(vsEdition, 'VC', 'Tools', 'MSVC')) : null;
+const wdkKits = 'C:/Program Files (x86)/Windows Kits/10';
+const sdkIncludeDir = newestSubdir(path.join(wdkKits, 'Include'), true);
+const sdkVersion = sdkIncludeDir ? path.basename(sdkIncludeDir) : null;
+const clExe = msvcTools ? path.join(msvcTools, 'bin', 'Hostx64', 'x64', 'cl.exe') : null;
+const linkExe = msvcTools ? path.join(msvcTools, 'bin', 'Hostx64', 'x64', 'link.exe') : null;
+const wdkNtoskrnlLib = sdkVersion ? path.join(wdkKits, 'Lib', sdkVersion, 'km', 'x64', 'ntoskrnl.lib') : null;
+const msvcOk = !!(clExe && existsSync(clExe) && linkExe && sdkVersion && wdkNtoskrnlLib && existsSync(wdkNtoskrnlLib));
+console.log(msvcOk ? `drivers via MSVC + WDK ${sdkVersion}` : 'MSVC/WDK ausente: drivers via zig (fallback)');
+
+// import library p/ os drivers
 const defFile = path.join(buildDir, 'ntoskrnl.def');
 writeFileSync(defFile, 'LIBRARY ntoskrnl.exe\nEXPORTS\n' + ntoskrnlExports.join('\n') + '\n');
 run(zig, ['dlltool', '-d', defFile, '-l', path.join(buildDir, 'ntoskrnl.lib')]);
@@ -121,12 +150,24 @@ const builtDrivers = [];
 const driverSources = walk(path.join(root, 'apps', 'drivers')).filter(f => f.endsWith('.c'));
 driverSources.forEach((driverSource, index) => {
     const driverName = path.basename(driverSource, '.c');
-    // cada driver num ImageBase proprio (sem relocs ainda): 0x500000 + 1MB cada
     const imageBase = '0x' + (0x500000 + index * 0x100000).toString(16);
     const sysFile = path.join(buildDir, driverName + '.sys');
-    run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-fno-builtin', '-O2',
-        '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,' + imageBase,
-        driverSource, path.join(buildDir, 'ntoskrnl.lib'), '-o', sysFile]);
+    if (msvcOk) {
+        const objFile = path.join(buildDir, driverName + '.obj');
+        run(clExe, ['/nologo', '/c', '/O2', '/GS-', '/kernel', '/D_AMD64_=1',
+            '/I', path.join(wdkKits, 'Include', sdkVersion, 'km'),
+            '/I', path.join(wdkKits, 'Include', sdkVersion, 'km', 'crt'),
+            '/I', path.join(wdkKits, 'Include', sdkVersion, 'shared'),
+            '/I', path.join(msvcTools, 'include'),
+            driverSource, '/Fo' + objFile]);
+        run(linkExe, ['/nologo', '/driver', '/entry:DriverEntry', '/subsystem:native',
+            '/machine:x64', '/base:' + imageBase, '/nodefaultlib',
+            objFile, wdkNtoskrnlLib, '/out:' + sysFile]);
+    } else {
+        run(zig, ['cc', '-target', 'x86_64-windows-gnu', '-nostdlib', '-fno-builtin', '-O2',
+            '-Wl,-e,DriverEntry', '-Wl,--subsystem,native', '-Wl,--image-base,' + imageBase,
+            driverSource, path.join(buildDir, 'ntoskrnl.lib'), '-o', sysFile]);
+    }
     builtDrivers.push({ name: 'apps/' + driverName + '.sys', file: sysFile });
 });
 

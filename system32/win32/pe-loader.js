@@ -118,7 +118,7 @@ function load(fileBuffer) {
 
     const entryPoint = imageBase + entryPointRva;
     os.debugPrint('[pe] entry point = 0x' + entryPoint.toString(16));
-    return entryPoint;
+    return { entryPoint, imageBase, sizeOfImage };
 }
 
 module.exports = { load, registerResolver };

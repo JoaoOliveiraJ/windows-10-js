@@ -25,6 +25,7 @@ const MessageChannels  = require('nano/message-channels');
 const Phase0           = require('init/phase0');
 const Phase1           = require('init/phase1');
 const Shell            = require('shell/shell');
+const SharedUserData   = require('ntos/mm/shared-user-data');
 
 require('ntos/ex/syscalls');     // registra a tabela SystemCall
 const Win32     = require('win32/win32');      // mini-kernel32
@@ -67,7 +68,7 @@ function kmain() {
     Scheduler.spawn('kbd-service', KbdService);
     Scheduler.spawn('shell', Shell.main);
     os.debugPrint('[kernel] idle loop - escalonador cooperativo ativo');
-    for (;;) { Scheduler.tick(); Ntoskrnl.runKernelTasks(); }
+    for (;;) { SharedUserData.updateSystemTimes(); Scheduler.tick(); Ntoskrnl.runKernelTasks(); }
 }
 
 kmain();

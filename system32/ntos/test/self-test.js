@@ -133,7 +133,7 @@ function run() {
     // PeLoader: executa hello.exe (Windows, x86-64) nativo no bare metal
     const exe = MemoryFileSystem.readBytes('/hello.exe');
     assert(exe, 'hello.exe no MemoryFileSystem');
-    const entry = PeLoader.load(exe);
+    const entry = PeLoader.load(exe).entryPoint;
     os.execMachineCode(entry);
     assert(Win32.lastWrite.indexOf('jsOS') >= 0, 'exe chamou kernel32 WriteFile');
 

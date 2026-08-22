@@ -64,62 +64,61 @@ function createDevice(driverObject, name) {
 
 // ---- dispatch para driver nativo (.sys) ----
 //
-// Layout do IRP na memoria do convidado (documentado em win32/ntoskrnl.js):
-//   +0 u32 majorFunction, +4 u32 status, +8 u64 bufferPointer,
-//   +16 u64 bufferLength, +24 u64 resultLength
-// A pagina do dispositivo (4KB): +0x400 area do IRP, +0x800 buffer (2KB).
+// Constroi um IRP REAL (layout oficial do WDK, ver win32/nt-abi.js) na
+// memoria do convidado e chama DriverObject->MajorFunction[major] do driver.
 
-function writeGuest32(address, value) { os.writePhysical32(address, value >>> 0); }
-function writeGuest64(address, value) {
-    writeGuest32(address, value >>> 0);
-    writeGuest32(address + 4, Math.floor(value / 0x100000000));
-}
+const IrpBuilder = require('win32/ntoskrnl/irp-builder');
+const GuestMemory = require('win32/guest-memory');
+const NtAbi = require('win32/nt-abi');
 
 function callNativeDriver(device, ioRequestPacket) {
     const devicePointer = device.data.nativeDevicePointer;
-    const driverObjectPointer = os.readPhysical32(devicePointer);
-    const dispatchTable = os.readPhysical32(driverObjectPointer);
-    const handlerAddress = os.readPhysical32(dispatchTable + ioRequestPacket.major * 8) +
-                           os.readPhysical32(dispatchTable + ioRequestPacket.major * 8 + 4) * 0x100000000;
+    const driverObjectPointer = GuestMemory.readGuest32(devicePointer +
+                                                        NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
+    const handlerAddress =
+        GuestMemory.readGuest64(driverObjectPointer + NtAbi.DRIVER_OBJECT.MAJOR_FUNCTION +
+                                ioRequestPacket.major * 8);
     if (!handlerAddress) {
         ioRequestPacket.status = STATUS.NOT_SUPPORTED;
         return ioRequestPacket;
     }
 
-    const irpAddress = devicePointer + 0x400;
-    const bufferAddress = devicePointer + 0x800;
     const data = ioRequestPacket.params.data;
     const dataLength = data ? String(data).length : 0;
+    const bufferLength = ioRequestPacket.major === IRP_MJ.WRITE ? dataLength : 2048;
 
-    if (data && dataLength > 2048) {
-        ioRequestPacket.status = STATUS.NOT_SUPPORTED;   // buffer de 2KB
-        return ioRequestPacket;
-    }
-    if (data) {
+    const bufferAddress = GuestMemory.guestAllocBytes(Math.max(1, bufferLength));
+    if (data)
         for (let i = 0; i < dataLength; i++)
-            os.writePhysical8(bufferAddress + i, String(data).charCodeAt(i) & 0xFF);
-    }
+            GuestMemory.writeGuest8(bufferAddress + i, String(data).charCodeAt(i) & 0xFF);
 
-    writeGuest32(irpAddress + 0, ioRequestPacket.major);
-    writeGuest32(irpAddress + 4, 0);                      // status
-    writeGuest64(irpAddress + 8, bufferAddress);
-    writeGuest64(irpAddress + 16, data ? dataLength : 2048);
-    writeGuest64(irpAddress + 24, 0);                     // resultLength
-    writeGuest32(irpAddress + 28, ioRequestPacket.minor); // minorFunction
+    const irpAddress = GuestMemory.guestAllocBytes(NtAbi.IRP.STRUCT_SIZE +
+                                                   NtAbi.IRP.STACK_LOCATION_SIZE);
+    IrpBuilder.build(irpAddress, {
+        major: ioRequestPacket.major,
+        minor: ioRequestPacket.minor,
+        buffer: bufferAddress,
+        bufferLength,
+        deviceObject: devicePointer,
+    });
 
     const guestStatus = os.execMsAbi(handlerAddress, devicePointer, irpAddress);
 
-    ioRequestPacket.status = os.readPhysical32(irpAddress + 4) | 0;
+    const ioStatus = IrpBuilder.readIoStatus(irpAddress);
+    ioRequestPacket.status = ioStatus.status;
     if (ioRequestPacket.status === 0 && guestStatus !== 0)
         ioRequestPacket.status = guestStatus;             // status pelo retorno
-    ioRequestPacket.info = os.readPhysical32(irpAddress + 24);
+    ioRequestPacket.info = ioStatus.information;
 
     if (ioRequestPacket.major === IRP_MJ.READ && ioRequestPacket.info > 0) {
         let text = '';
         for (let i = 0; i < ioRequestPacket.info; i++)
-            text += String.fromCharCode(os.readPhysical8(bufferAddress + i));
+            text += String.fromCharCode(GuestMemory.readGuest8(bufferAddress + i));
         ioRequestPacket.result = text;
     }
+
+    GuestMemory.guestFreeBytes(irpAddress);
+    GuestMemory.guestFreeBytes(bufferAddress);
     return ioRequestPacket;
 }
 

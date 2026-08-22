@@ -1,0 +1,67 @@
+// ===========================================================================
+// jsOS - system32/win32/guest-strings.js: strings do convidado.
+//
+// Layout REAL do NT (WDK): UNICODE_STRING = { u16 Length @0, u16
+// MaximumLength @2, u32 pad @4, u64 Buffer @8 }; ANSI_STRING = idem com
+// bytes 8-bit. Leitura/escrita na memoria fisica do convidado.
+// ===========================================================================
+
+const GuestMemory = require('win32/guest-memory');
+
+function readGuestCString(address) {
+    let text = '';
+    for (let b = GuestMemory.readGuest8(address); b !== 0;
+         b = GuestMemory.readGuest8(++address))
+        text += String.fromCharCode(b);
+    return text;
+}
+
+function readGuestWideString(address) {
+    let text = '';
+    for (let w = GuestMemory.readGuest16(address); w !== 0;
+         w = GuestMemory.readGuest16(address += 2))
+        text += String.fromCharCode(w);
+    return text;
+}
+
+function readUnicodeString(pointer) {
+    const charCount = GuestMemory.readGuest16(pointer) / 2;
+    const buffer = GuestMemory.readGuest32(pointer + 8);
+    let text = '';
+    for (let i = 0; i < charCount; i++)
+        text += String.fromCharCode(GuestMemory.readGuest16(buffer + i * 2));
+    return text;
+}
+
+function readAnsiString(pointer) {
+    const length = GuestMemory.readGuest16(pointer);
+    const buffer = GuestMemory.readGuest32(pointer + 8);
+    let text = '';
+    for (let i = 0; i < length; i++)
+        text += String.fromCharCode(GuestMemory.readGuest8(buffer + i));
+    return text;
+}
+
+// campos de uma (UNICODE|ANSI)_STRING: { u16 len, u16 max, u32 pad, u64 buf }
+function writeStringFields(pointer, lengthBytes, maximumBytes, bufferPointer) {
+    GuestMemory.writeGuest16(pointer, lengthBytes);
+    GuestMemory.writeGuest16(pointer + 2, maximumBytes);
+    GuestMemory.writeGuest32(pointer + 4, 0);
+    GuestMemory.writeGuest32(pointer + 8, bufferPointer >>> 0);
+    GuestMemory.writeGuest32(pointer + 12, 0);
+}
+
+function writeGuestWideString(address, text) {
+    for (let i = 0; i < text.length; i++)
+        GuestMemory.writeGuest16(address + i * 2, text.charCodeAt(i));
+    GuestMemory.writeGuest16(address + text.length * 2, 0);
+}
+
+function writeGuestBytes(address, bytes) {
+    for (let i = 0; i < bytes.length; i++)
+        GuestMemory.writeGuest8(address + i, bytes[i]);
+}
+
+module.exports = { readGuestCString, readGuestWideString, readUnicodeString,
+                   readAnsiString, writeStringFields, writeGuestWideString,
+                   writeGuestBytes };
