@@ -70,6 +70,7 @@ module.exports = {
         'KeReleaseMutex',                  // (mutexPtr, wait)
         'KeWaitForSingleObject',           // (objPtr, reason, mode, alertable, timeoutPtr)
         'KeWaitForMultipleObjects',        // (count, objsPtr, waitType, reason, mode, alertable, timeoutPtr)
+        'KeQueryPerformanceCounter',       // (outFreqPtr) -> contador TSC
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -210,5 +211,15 @@ module.exports = {
          timeoutPointer) =>
             Dispatcher.waitForMultipleObjects(count >>> 0, objectsPointer,
                                               waitType >>> 0, timeoutPointer),
+        // KeQueryPerformanceCounter(outFreqPtr) -> contador atual (TSC)
+        (frequencyPointer) => {
+            if (frequencyPointer) {
+                const hz = Math.floor(Clock.tscFrequencyHz());
+                GuestMemory.writeGuest32(frequencyPointer, hz >>> 0);
+                GuestMemory.writeGuest32(frequencyPointer + 4,
+                                         Math.floor(hz / 0x100000000) >>> 0);
+            }
+            return Math.floor(os.rdtsc());
+        },
     ],
 };

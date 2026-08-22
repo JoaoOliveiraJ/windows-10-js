@@ -25,7 +25,7 @@ function firstStackLocation(irpAddress, stackCount) {
 // constroi um IRP em `address` (area zerada pelo caller) pronto para o
 // primeiro IofCallDriver: CL/CSL ainda apontam ACIMA do topo.
 function build(address, { major, minor, buffer, bufferLength, deviceObject,
-                          power, ioctl, stackCount }) {
+                          power, ioctl, stackCount, fileObject }) {
     const count = Math.max(1, stackCount || 1);
     for (let i = 0; i < sizeFor(count); i += 4)
         GuestMemory.writeGuest32(address + i, 0);
@@ -45,6 +45,7 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject,
     GuestMemory.writeGuest32(stack + SL.READ_LENGTH, bufferLength);
     GuestMemory.writeGuest64(stack + SL.READ_OFFSET, 0);
     GuestMemory.writeGuest64(stack + SL.DEVICE_OBJECT, deviceObject);
+    GuestMemory.writeGuest64(stack + SL.FILE_OBJECT, fileObject || 0);
 
     // IRP_MJ_POWER: Parameters.Power.{Type,State} (uniao, por cima dos campos
     // de Read/Write — como no wdm.h)

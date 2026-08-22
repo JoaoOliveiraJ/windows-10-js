@@ -291,6 +291,20 @@ function run() {
     }
     checkNativeDriver('\\Device\\Event', 'event-ok');
 
+    // grupo 16: IRP_MJ_CREATE/CLOSE com FILE_OBJECT + Zw* file I/O real
+    // (driver le o NTFS D: e escreve/le no ramfs C: em modo kernel)
+    Ntoskrnl.loadDriver('/fileio.sys');
+    assert(ObjectManager.lookup('\\Device\\FileIo'), 'fileio device criado');
+    const opened = IoManager.openDevice('\\Device\\FileIo');
+    assert(opened.status === IoManager.STATUS.SUCCESS && opened.handle > 0,
+           'IRP_MJ_CREATE no driver nativo');
+    const fileIoRead = IoManager.readHandle(opened.handle);
+    assert(fileIoRead.result === 'fileio-ok',
+           'read via handle (CREATE+FILE_OBJECT+Zw* NTFS/ramfs) -> "' +
+           fileIoRead.result + '"');
+    assert(IoManager.closeDevice(opened.handle) === IoManager.STATUS.SUCCESS,
+           'IRP_MJ_CLOSE no driver nativo');
+
     os.debugPrint('SELFTEST_OK');
 }
 

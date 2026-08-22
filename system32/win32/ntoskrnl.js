@@ -21,13 +21,15 @@ function lookup(dllName, functionName) {
 }
 
 // handler chamado pelo C (js_win32_dispatch; id ja sem o offset 32)
-function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+                arg8, arg9, arg10, arg11, arg12) {
     const handlerFunction = exportHandlers[id];
     if (!handlerFunction) {
         os.debugPrint('[ntoskrnl] export desconhecido id=' + id);
         return 0;
     }
-    return handlerFunction(arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+    return handlerFunction(arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+                           arg8, arg9, arg10, arg11, arg12);
 }
 
 // o kernel drena timers + DPCs + work items no idle loop (como o NT ao cair

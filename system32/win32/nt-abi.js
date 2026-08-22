@@ -101,6 +101,8 @@ module.exports = {
         DEVICE_OBJECT: 0x08,
         STRUCT_SIZE: 0xB8,
     },
+    // IO_STATUS_BLOCK (wdm.h)
+    IO_STATUS_BLOCK: { STATUS: 0, INFORMATION: 8, SIZE: 0x10 },
     // POWER_STATE_TYPE (wdm.h)
     POWER_STATE_TYPE: { SYSTEM_POWER_STATE: 0, DEVICE_POWER_STATE: 1 },
     // DEVICE_POWER_STATE (wdm.h)

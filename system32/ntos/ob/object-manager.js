@@ -165,4 +165,4 @@ function unlink(path) {
 }
 
 module.exports = { createDirectory, createObject, createSymlink, mount, open,
-                   getObject, close, refs, dump, lookup, unlink };
+                   getObject, close, refs, dump, lookup, unlink, resolve };

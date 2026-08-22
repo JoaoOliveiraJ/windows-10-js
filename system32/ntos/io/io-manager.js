@@ -148,10 +148,26 @@ function iofCompleteRequest(ioRequestPointer) {
     return 0;
 }
 
+// cria um FILE_OBJECT real apontando para o device (um por handle aberto;
+// anonimo/transiente nas chamadas sem handle)
+function createFileObject(devicePointer) {
+    const fileObjectPointer = GuestMemory.guestAllocBytes(NtAbi.FILE_OBJECT.STRUCT_SIZE);
+    GuestMemory.writeGuest16(fileObjectPointer + NtAbi.FILE_OBJECT.TYPE, 5);
+    GuestMemory.writeGuest16(fileObjectPointer + NtAbi.FILE_OBJECT.SIZE,
+                             NtAbi.FILE_OBJECT.STRUCT_SIZE);
+    GuestMemory.writeGuest64(fileObjectPointer + NtAbi.FILE_OBJECT.DEVICE_OBJECT,
+                             devicePointer);
+    return fileObjectPointer;
+}
+
 function callNativeDriver(device, ioRequestPacket) {
     // despacha para o TOPO da pilha de devices (filtros acima do dono)
     const devicePointer = device.data.stackTopPointer || device.data.nativeDevicePointer;
     const stackCount = GuestMemory.readGuest8(devicePointer + NtAbi.DEVICE_OBJECT.STACK_SIZE) || 1;
+    // FILE_OBJECT da operacao: do handle, ou transiente (criado/liberado aqui)
+    const transientFileObject = !ioRequestPacket.fileObjectPointer;
+    const fileObjectPointer = ioRequestPacket.fileObjectPointer ||
+                              createFileObject(devicePointer);
 
     const data = ioRequestPacket.params.data;
     const dataLength = data ? String(data).length : 0;
@@ -178,6 +194,7 @@ function callNativeDriver(device, ioRequestPacket) {
         deviceObject: devicePointer,
         power: ioRequestPacket.params.power,
         stackCount,
+        fileObject: fileObjectPointer,
         ioctl: ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL
             ? { code: ioRequestPacket.params.controlCode >>> 0,
                 inputLength: dataLength }
@@ -203,7 +220,59 @@ function callNativeDriver(device, ioRequestPacket) {
 
     GuestMemory.guestFreeBytes(irpAddress);
     if (bufferAddress) GuestMemory.guestFreeBytes(bufferAddress);
+    if (transientFileObject) GuestMemory.guestFreeBytes(fileObjectPointer);
     return ioRequestPacket;
+}
+
+// ---- abertura/fechamento real: IRP_MJ_CREATE / IRP_MJ_CLOSE ----------------
+// Um handle = um FILE_OBJECT vivo no convidado; CREATE vai ao topo da pilha.
+let nextDeviceHandle = 1;
+const openDeviceHandles = new Map();   // handle -> { device, fileObjectPointer }
+
+function openDevice(devicePath) {
+    const device = ObjectManager.lookup(devicePath);
+    if (!device || device.type !== 'Device')
+        return { status: STATUS.NOT_FOUND, handle: 0 };
+    const topPointer = device.data.stackTopPointer || device.data.nativeDevicePointer;
+    const fileObjectPointer = createFileObject(topPointer);
+    const ioRequest = makeIoRequest(IRP_MJ.CREATE, {});
+    ioRequest.fileObjectPointer = fileObjectPointer;
+    callDriver(devicePath, ioRequest);
+    if (ioRequest.status !== STATUS.SUCCESS) {
+        GuestMemory.guestFreeBytes(fileObjectPointer);
+        return { status: ioRequest.status, handle: 0 };
+    }
+    const handle = nextDeviceHandle++;
+    openDeviceHandles.set(handle, { device, fileObjectPointer });
+    return { status: STATUS.SUCCESS, handle };
+}
+
+function closeDevice(handle) {
+    const entry = openDeviceHandles.get(handle);
+    if (!entry) return STATUS.NOT_FOUND;
+    const ioRequest = makeIoRequest(IRP_MJ.CLOSE, {});
+    ioRequest.fileObjectPointer = entry.fileObjectPointer;
+    callDriver('\\Device\\' + entry.device.name, ioRequest);
+    openDeviceHandles.delete(handle);
+    GuestMemory.guestFreeBytes(entry.fileObjectPointer);
+    return ioRequest.status;
+}
+
+// I/O num handle aberto (CREATE ja feito; o FILE_OBJECT e o do handle)
+function readHandle(handle) {
+    const entry = openDeviceHandles.get(handle);
+    if (!entry) { const r = makeIoRequest(IRP_MJ.READ, {}); r.status = STATUS.NOT_FOUND; return r; }
+    const ioRequest = makeIoRequest(IRP_MJ.READ, {});
+    ioRequest.fileObjectPointer = entry.fileObjectPointer;
+    return callDriver('\\Device\\' + entry.device.name, ioRequest);
+}
+
+function writeHandle(handle, data) {
+    const entry = openDeviceHandles.get(handle);
+    if (!entry) { const r = makeIoRequest(IRP_MJ.WRITE, {}); r.status = STATUS.NOT_FOUND; return r; }
+    const ioRequest = makeIoRequest(IRP_MJ.WRITE, { data });
+    ioRequest.fileObjectPointer = entry.fileObjectPointer;
+    return callDriver('\\Device\\' + entry.device.name, ioRequest);
 }
 
 // ---- IRP_MJ_POWER: entrega um IRP JA construido na memoria do convidado ----
@@ -300,6 +369,7 @@ function getDevicePowerState(devicePath) {
 
 module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    createDevice, callDriver, read, write, deviceControl,
+                   openDevice, closeDevice, readHandle, writeHandle,
                    pnpStartDevice, setDevicePowerState, queryDevicePowerState,
                    getDevicePowerState, dispatchNativePowerIrp,
                    iofCallDriver, iofCompleteRequest };
