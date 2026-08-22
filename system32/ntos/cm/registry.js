@@ -69,6 +69,23 @@ function getNode(handle) {
     return path ? walk(path, false) : null;
 }
 
+// caminho absoluto de um handle (para delete/enumerate)
+function getPath(handle) {
+    return handleTable.get(handle) || null;
+}
+
+// remove a chave do handle da hive (devolve true se removeu)
+function deleteKey(handle) {
+    const path = handleTable.get(handle);
+    if (!path) return false;
+    const parts = split(path);
+    if (parts.length === 0) return false;
+    const name = parts[parts.length - 1].toLowerCase();
+    const parent = walk('\\' + parts.slice(0, -1).join('\\'), false);
+    if (!parent) return false;
+    return parent.children.delete(name);
+}
+
 function closeHandle(handle) {
     return handleTable.delete(handle);
 }
@@ -86,5 +103,5 @@ function getValue(handle, valueName) {
     return node.values.get(valueName.toLowerCase()) || null;
 }
 
-module.exports = { openOrCreate, open, getNode, closeHandle, setValue, getValue,
-                   listKeys, readValueByPath };
+module.exports = { openOrCreate, open, getNode, getPath, deleteKey, closeHandle,
+                   setValue, getValue, listKeys, readValueByPath };

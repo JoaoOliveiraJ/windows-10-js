@@ -326,6 +326,12 @@ function run() {
     }
     checkNativeDriver('\\Device\\Guards', 'guards-ok');
 
+    // grupo 18: MmMapIoSpace (LAPIC real lido via mapeamento), enumeracao e
+    // delete no Registry, stall calibrado por TSC
+    Ntoskrnl.loadDriver('/mmio.sys');
+    assert(ObjectManager.lookup('\\Device\\Mmio'), 'mmio device criado');
+    checkNativeDriver('\\Device\\Mmio', 'mmio-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

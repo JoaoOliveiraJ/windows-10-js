@@ -71,6 +71,7 @@ module.exports = {
         'KeWaitForSingleObject',           // (objPtr, reason, mode, alertable, timeoutPtr)
         'KeWaitForMultipleObjects',        // (count, objsPtr, waitType, reason, mode, alertable, timeoutPtr)
         'KeQueryPerformanceCounter',       // (outFreqPtr) -> contador TSC
+        'KeStallExecutionProcessor',       // (microseconds) — espera ocupada real
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -220,6 +221,14 @@ module.exports = {
                                          Math.floor(hz / 0x100000000) >>> 0);
             }
             return Math.floor(os.rdtsc());
+        },
+        // KeStallExecutionProcessor(microseconds): busy-wait medido pelo TSC
+        (microseconds) => {
+            const ticksToStall = Clock.tscFrequencyHz() / 1000000 *
+                                 (microseconds >>> 0);
+            const start = os.rdtsc();
+            while (os.rdtsc() - start < ticksToStall) { /* stall real */ }
+            return 0;
         },
     ],
 };

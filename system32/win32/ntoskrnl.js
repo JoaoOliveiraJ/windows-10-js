@@ -15,7 +15,8 @@ for (const groupName of GROUP_ORDER) {
 }
 
 function lookup(dllName, functionName) {
-    if (!/^ntoskrnl\.exe$/i.test(dllName)) return -1;
+    // a tabela e' a mesma para ntoskrnl.exe e HAL.dll (no NT de verdade,
+    // KeQueryPerformanceCounter/KeStallExecutionProcessor etc. saem da HAL)
     const index = exportNames.indexOf(functionName);
     return index < 0 ? -1 : 32 + index;
 }

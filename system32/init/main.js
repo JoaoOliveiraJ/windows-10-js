@@ -35,6 +35,7 @@ const PeLoader  = require('win32/pe-loader');
 // o loader PE resolve imports contra as tabelas registradas aqui:
 PeLoader.registerResolver(/^kernel32\.dll$/i, (dll, name) => Win32.lookup(dll, name));
 PeLoader.registerResolver(/^ntoskrnl\.exe$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
+PeLoader.registerResolver(/^hal\.dll$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
 
 function banner() {
     Console.print('=================================================');

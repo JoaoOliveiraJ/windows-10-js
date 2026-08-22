@@ -176,6 +176,9 @@ module.exports = {
         'ZwCreateFile',
         'ZwReadFile',
         'ZwWriteFile',
+        'ZwEnumerateKey',
+        'ZwEnumerateValueKey',
+        'ZwDeleteKey',
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -237,5 +240,52 @@ module.exports = {
         zwReadFile,
         // ZwWriteFile(idem)
         zwWriteFile,
+        // ZwEnumerateKey(handle, index, KeyBasicInformation, outBuf, size, outLen)
+        // KEY_BASIC_INFORMATION: +0 LastWriteTime u64, +8 TitleIndex, +12 NameLength, +16 Name
+        (keyHandle, index, _infoClass, outBufferPointer, bufferSize, outLengthPointer) => {
+            const node = Registry.getNode(keyHandle >>> 0);
+            if (!node) return STATUS_INVALID_HANDLE | 0;
+            const children = [...node.children.values()];
+            if ((index >>> 0) >= children.length) return 0x8000001A | 0;  // NO_MORE_ENTRIES
+            const name = children[index >>> 0].name;
+            const needed = 0x10 + name.length * 2;
+            if (bufferSize < needed) {
+                GuestMemory.writeGuest32(outLengthPointer, needed);
+                return STATUS_BUFFER_TOO_SMALL | 0;
+            }
+            GuestMemory.writeGuest64(outBufferPointer, 0);            // LastWriteTime
+            GuestMemory.writeGuest32(outBufferPointer + 8, 0);        // TitleIndex
+            GuestMemory.writeGuest32(outBufferPointer + 12, name.length * 2);
+            for (let i = 0; i < name.length; i++)
+                GuestMemory.writeGuest16(outBufferPointer + 16 + i * 2,
+                                         name.charCodeAt(i));
+            GuestMemory.writeGuest32(outLengthPointer, needed);
+            return 0;
+        },
+        // ZwEnumerateValueKey(handle, index, KeyValueBasicInformation, out, size, outLen)
+        // KEY_VALUE_BASIC_INFORMATION: +0 TitleIndex, +4 Type, +8 NameLength, +12 Name
+        (keyHandle, index, _infoClass, outBufferPointer, bufferSize, outLengthPointer) => {
+            const node = Registry.getNode(keyHandle >>> 0);
+            if (!node) return STATUS_INVALID_HANDLE | 0;
+            const values = [...node.values.values()];
+            if ((index >>> 0) >= values.length) return 0x8000001A | 0;
+            const entry = values[index >>> 0];
+            const needed = 12 + entry.name.length * 2;
+            if (bufferSize < needed) {
+                GuestMemory.writeGuest32(outLengthPointer, needed);
+                return STATUS_BUFFER_TOO_SMALL | 0;
+            }
+            GuestMemory.writeGuest32(outBufferPointer, 0);
+            GuestMemory.writeGuest32(outBufferPointer + 4, entry.type);
+            GuestMemory.writeGuest32(outBufferPointer + 8, entry.name.length * 2);
+            for (let i = 0; i < entry.name.length; i++)
+                GuestMemory.writeGuest16(outBufferPointer + 12 + i * 2,
+                                         entry.name.charCodeAt(i));
+            GuestMemory.writeGuest32(outLengthPointer, needed);
+            return 0;
+        },
+        // ZwDeleteKey(handle): remove a chave da hive de verdade
+        (keyHandle) => Registry.deleteKey(keyHandle >>> 0)
+            ? 0 : STATUS_INVALID_HANDLE | 0,
     ],
 };
