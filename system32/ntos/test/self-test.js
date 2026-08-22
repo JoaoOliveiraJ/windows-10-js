@@ -44,6 +44,35 @@ function run() {
     const m = SystemCall(SystemCall.byName.meminfo);
     assert(m.total > 0 && m.used > 0, 'meminfo');
 
+    // Memory Manager real: PFN (frames fisicos) + paging (VA->PA de verdade)
+    const Pfn = require('ntos/mm/pfn');
+    const Paging = require('ntos/mm/paging');
+    const VirtualMemory = require('ntos/mm/virtual-memory');
+
+    const freeBefore = Pfn.freeCount();
+    const frame1 = Pfn.allocPage();
+    assert(frame1 > 0, 'pfn alloc');
+    assert(Pfn.freeCount() === freeBefore - 1, 'pfn contagem desceu');
+    Pfn.freePage(frame1);
+    assert(Pfn.freeCount() === freeBefore, 'pfn free devolveu');
+    const frame2 = Pfn.allocPage();
+    assert(frame2 === frame1, 'pfn reusa frame livre');
+    Pfn.freePage(frame2);
+
+    // identity: VA conhecida traduz p/ o mesmo fisico
+    assert(Paging.translate(0x100000) === 0x100000, 'identity map traduz');
+
+    // VirtualAlloc: VA nova -> frame fisico distinto, dados fluem pela tabela
+    const va = VirtualMemory.alloc(4096);
+    assert(va > 0, 'VirtualAlloc');
+    const pa = Paging.translate(va);
+    assert(pa > 0 && (pa & ~0xFFF) !== (va & ~0xFFF), 'VA mapeada p/ frame distinto');
+    os.writePhysical32(va, 0xC0FFEE);
+    assert(os.readPhysical32(va) === 0xC0FFEE, 'escrita pela VA mapeada');
+    assert(os.readPhysical32(pa) === 0xC0FFEE, 'frame fisico tem o conteudo');
+    VirtualMemory.free(va, 4096);
+    assert(Paging.translate(va) === 0, 'pagina desmapada no free');
+
     // escalonador: processo gerador cooperativo
     let ran = 0;
     Scheduler.spawn('test', function* () { ran++; yield; ran++; });

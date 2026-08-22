@@ -50,7 +50,11 @@ com `ntos/{ob,mm,ps,ex,fs,rtl,test}`, `drivers/`, `win32/`.
 │   ├── ntos/                 #   subsistemas NT (≈ ntoskrnl.exe)
 │   │   ├── ob/objmgr.js      #     Object Manager (namespace, handles)
 │   │   ├── io/iomgr.js       #     I/O Manager (DriverObject + IRPs)
-│   │   ├── mm/memory.js      #     Memory Manager (visão heap/RAM)
+│   │   ├── mm/memory-map.js  #     MM: mapa de memoria (única fonte)
+│   │   ├── mm/pfn.js         #       alocador de frames físicos (PFN)
+│   │   ├── mm/paging.js      #       edição real das tabelas de página
+│   │   ├── mm/virtual-memory.js#     VirtualAlloc/Free (VA->frame real)
+│   │   ├── mm/memory.js      #       visão heap/RAM
 │   │   ├── ps/scheduler.js   #     Process Manager (escalonador)
 │   │   ├── ex/syscalls.js    #     Executive: tabela de syscalls
 │   │   ├── fs/vfs.js         #     VFS (FS em memória)
@@ -105,7 +109,9 @@ O jsOS espelha a arquitetura do Windows NT, com cada camada em JS:
 | boot fases 0/1 | phase0 + phase1 (init em fases estilo NT) | `system32/init/` ✅ |
 | tabela de serviços | syscalls numeradas | `system32/ntos/ex/syscalls.js` |
 | **Object Manager** | namespace único, handles, refcount | `system32/ntos/ob/object-manager.js` ✅ |
-| Process Manager | escalonador cooperativo | `system32/ntos/ps/scheduler.js` |
+| Process Manager | escalonador cooperativo + threads de kernel (PsCreateSystemThread) | `system32/ntos/ps/` ✅ |
+| **Memory Manager** | PFN (frames físicos reais) + split 2MB→4KB + map/unmap de PTEs em JS + VirtualAlloc/Free | `system32/ntos/mm/` ✅ |
+| DPCs / IRQL / spinlocks | `ke/irql.js` + `ke/dpc.js` (DPCs a DISPATCH_LEVEL) | ✅ |
 | I/O Manager (IRP) | IRPs + drivers JS/nativos | `system32/ntos/io/io-manager.js` ✅ |
 | PnP Manager | IRP_MJ_PNP / START_DEVICE | io-manager ✅ |
 | Config Manager (Registry) | hive em JS + Zw* para drivers | `system32/ntos/cm/` ✅ |

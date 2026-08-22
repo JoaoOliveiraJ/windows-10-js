@@ -12,6 +12,7 @@ require('nano/kernel');
 const ObjectManager = require('ntos/ob/object-manager');
 const MemoryFileSystem = require('ntos/fs/memory-file-system');
 const Registry = require('ntos/cm/registry');
+const Pfn = require('ntos/mm/pfn');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -35,6 +36,7 @@ function seedService(name, driverFile, start) {
 function init() {
     os.debugPrint('[boot] fase 0: nanokernel + objetos + registry');
     Interrupts.init();
+    Pfn.init();                 // memory manager: alocador de frames fisicos
 
     ObjectManager.createDirectory('\\Device');
     ObjectManager.createDirectory('\\Driver');

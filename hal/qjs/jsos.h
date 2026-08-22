@@ -32,6 +32,8 @@ extern const JSCFunctionListEntry jsos_system_funcs[];
 extern const int jsos_system_funcs_count;
 extern const JSCFunctionListEntry jsos_irq_funcs[];
 extern const int jsos_irq_funcs_count;
+extern const JSCFunctionListEntry jsos_mmu_funcs[];
+extern const int jsos_mmu_funcs_count;
 
 /* engine.c */
 JSContext *jsos_context(void);

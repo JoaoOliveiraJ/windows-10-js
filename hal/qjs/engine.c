@@ -25,6 +25,7 @@ void js_host_init(void) {
     JS_SetPropertyFunctionList(g_ctx, os, jsos_memory_funcs, jsos_memory_funcs_count);
     JS_SetPropertyFunctionList(g_ctx, os, jsos_system_funcs, jsos_system_funcs_count);
     JS_SetPropertyFunctionList(g_ctx, os, jsos_irq_funcs, jsos_irq_funcs_count);
+    JS_SetPropertyFunctionList(g_ctx, os, jsos_mmu_funcs, jsos_mmu_funcs_count);
     JS_SetPropertyStr(g_ctx, global, "os", os);
     JS_FreeValue(g_ctx, global);
 }
