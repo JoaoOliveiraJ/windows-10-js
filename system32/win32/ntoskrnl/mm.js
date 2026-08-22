@@ -4,7 +4,15 @@
 // ===========================================================================
 
 const GuestMemory = require('win32/guest-memory');
+const GuestStrings = require('win32/guest-strings');
 const Paging = require('ntos/mm/paging');
+
+// o resolvedor de exports do kernel (registrado pelo ntoskrnl.js ao montar a
+// tabela — quebra o ciclo ntoskrnl<->mm sem require dentro de funcao)
+let kernelExportLookup = null;
+function registerRoutineLookup(lookupFunction) {
+    kernelExportLookup = lookupFunction;
+}
 
 // mapeamentos IoSpace ativos: va -> { physicalAddress, size } (aqui VA == PA:
 // nossa paginacao e' identity-mapped, entao o "mapeamento" e' real por
@@ -53,9 +61,8 @@ module.exports = {
         // (o trampolim que despacha p/ o handler JS — como o GetProcAddress
         // de kernel do NT)
         (unicodePointer) => {
-            const GuestStrings = require('win32/guest-strings');
             const routineName = GuestStrings.readUnicodeString(unicodePointer);
-            const apiId = require('win32/ntoskrnl').lookup('', routineName);
+            const apiId = kernelExportLookup('', routineName);
             if (apiId < 0) return 0;
             return os.getWin32ThunkTable() + apiId * 10;   // stub de 10 bytes
         },
@@ -84,4 +91,5 @@ module.exports = {
             return 0;
         },
     ],
+    registerRoutineLookup,
 };

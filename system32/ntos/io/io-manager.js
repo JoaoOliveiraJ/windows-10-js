@@ -14,6 +14,19 @@
 // ===========================================================================
 
 const ObjectManager = require('ntos/ob/object-manager');
+const PowerManager = require('ntos/po/power-manager');
+const Dispatcher = require('ntos/ke/dispatcher');
+const IrpBuilder = require('win32/ntoskrnl/irp-builder');
+const GuestMemory = require('win32/guest-memory');
+const GuestStrings = require('win32/guest-strings');
+const NtAbi = require('win32/nt-abi');
+
+// o bus driver (drivers/bus/pci) registra aqui o respondedor PNP de PDOs —
+// quebra o ciclo io-manager<->pci sem require dentro de funcao
+let pdoNativeAnswerer = null;
+function registerPdoNativeAnswerer(answerFunction) {
+    pdoNativeAnswerer = answerFunction;
+}
 
 // Major function codes (subconjunto do NT)
 const IRP_MJ = {
@@ -91,10 +104,6 @@ function createDevice(driverObject, name) {
 // Constroi um IRP REAL (layout oficial do WDK, ver win32/nt-abi.js) na
 // memoria do convidado e chama DriverObject->MajorFunction[major] do driver.
 
-const IrpBuilder = require('win32/ntoskrnl/irp-builder');
-const GuestMemory = require('win32/guest-memory');
-const NtAbi = require('win32/nt-abi');
-
 const SL = NtAbi.IO_STACK_LOCATION;
 const IRP = NtAbi.IRP;
 
@@ -125,9 +134,10 @@ function iofCallDriver(devicePointer, ioRequestPointer) {
                                                         NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
     if (!driverObjectPointer) {
         // PDO sem driver nativo: o bus driver (JS) responde (estilo pci.sys)
-        const pnpStatus = require('drivers/bus/pci').answerNativePnpIrp(
-            devicePointer, ioRequestPointer);
-        if (pnpStatus !== null) return pnpStatus | 0;
+        if (pdoNativeAnswerer) {
+            const pnpStatus = pdoNativeAnswerer(devicePointer, ioRequestPointer);
+            if (pnpStatus !== null) return pnpStatus | 0;
+        }
         return STATUS.NOT_SUPPORTED;
     }
     const handlerAddress =
@@ -197,7 +207,7 @@ function iofCompleteRequest(ioRequestPointer) {
                                     GuestMemory.readGuest8(systemBuffer + i));
     }
     const userEvent = GuestMemory.readGuest64(ioRequestPointer + IRP.USER_EVENT);
-    if (userEvent) require('ntos/ke/dispatcher').setEvent(userEvent);
+    if (userEvent) Dispatcher.setEvent(userEvent);
     // IRP_BUFFERED_IO + DEALLOCATE_BUFFER: o SystemBuffer e' do I/O manager
     if (GuestMemory.readGuest32(ioRequestPointer + IRP.FLAGS) & IRP_DEALLOCATE_BUFFER) {
         if (systemBuffer) GuestMemory.guestFreeBytes(systemBuffer);
@@ -423,6 +433,10 @@ function dispatchNativePowerIrp(devicePointer, ioRequestPointer) {
     return ioStatus.status !== 0 ? ioStatus.status : guestStatus;
 }
 
+// o Power Manager despacha power IRPs atraves do I/O manager (registrado
+// aqui para nao haver require cruzado entre os dois modulos)
+PowerManager.registerPowerIrpDispatcher(dispatchNativePowerIrp);
+
 // IoCallDriver: entrega o IRP ao driver dono do dispositivo (ou a pilha
 // nativa anexada ao device — PDOs nao tem driver JS, mas podem ter FDO)
 function callDriver(devicePath, ioRequestPacket) {
@@ -489,7 +503,6 @@ function queryDeviceId(devicePath, idType) {
     if (typeof ioRequest.result === 'string') return ioRequest.result;
     if (ioRequest.info) {
         // pilha nativa: Information = ponteiro p/ a MULTI_SZ no convidado
-        const GuestStrings = require('win32/guest-strings');
         const idString = GuestStrings.readGuestWideString(ioRequest.info);
         GuestMemory.guestFreeBytes(ioRequest.info);
         return idString;
@@ -498,8 +511,6 @@ function queryDeviceId(devicePath, idType) {
 }
 
 // ---- Power Manager: IRP_MJ_POWER SET/QUERY_POWER (device power state) ----
-const PowerManager = require('ntos/po/power-manager');
-const NtAbiPower = require('win32/nt-abi');
 
 function sendPowerRequest(devicePath, minorFunction, deviceState) {
     const device = ObjectManager.lookup(devicePath);
@@ -509,7 +520,7 @@ function sendPowerRequest(devicePath, minorFunction, deviceState) {
     const devicePointer = device.data.nativeDevicePointer;
     const ioRequest = makeIoRequest(IRP_MJ.POWER, {
         minor: minorFunction,
-        power: { powerStateType: NtAbiPower.POWER_STATE_TYPE.DEVICE_POWER_STATE,
+        power: { powerStateType: NtAbi.POWER_STATE_TYPE.DEVICE_POWER_STATE,
                  deviceState },
     });
     // contabiliza no Power Manager: em processamento durante o dispatch
@@ -543,4 +554,4 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    getDevicePowerState, dispatchNativePowerIrp,
                    iofCallDriver, iofCompleteRequest,
                    buildSynchronousFsdRequest, buildDeviceIoControlRequest,
-                   pnpRemoveDevice, queryDeviceId };
+                   pnpRemoveDevice, queryDeviceId, registerPdoNativeAnswerer };

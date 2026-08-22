@@ -4,13 +4,14 @@
 // ===========================================================================
 
 const KernelThreads = require('ntos/ps/kernel-threads');
+const Process = require('ntos/ps/process');
 
 module.exports = {
     names: [
         'PsCreateSystemThread',
         'PsTerminateSystemThread',
-        'PsGetCurrentThreadId',     // () -> handle da thread nativa corrente
-        'PsGetCurrentProcessId',    // () -> 0 (processo System, como o NT)
+        'PsGetCurrentThreadId',     // () -> KTHREAD.Cid.UniqueThread (caminho do NT)
+        'PsGetCurrentProcessId',    // () -> KTHREAD.Cid.UniqueProcess (idem)
     ],
     handlers: [
         // PsCreateSystemThread(outHandlePtr, access, objAttrs, procHandle,
@@ -23,9 +24,9 @@ module.exports = {
         },
         // PsTerminateSystemThread(status)
         (_status) => KernelThreads.terminateCurrentThread(),
-        // PsGetCurrentThreadId()
-        () => KernelThreads.getCurrentThreadHandle(),
-        // PsGetCurrentProcessId(): drivers rodam no contexto do System (0)
-        () => 0,
+        // PsGetCurrentThreadId(): thread corrente -> Cid.UniqueThread
+        () => Process.getCurrentThreadId(),
+        // PsGetCurrentProcessId(): thread corrente -> Cid.UniqueProcess
+        () => Process.getCurrentProcessId(),
     ],
 };

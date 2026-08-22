@@ -14,6 +14,15 @@ const NanoKernel = require('nano/kernel');
 const PeLoader = require('win32/pe-loader');
 const Win32 = require('win32/win32');
 const Ntoskrnl = require('win32/ntoskrnl');
+const Pfn = require('ntos/mm/pfn');
+const Paging = require('ntos/mm/paging');
+const VirtualMemory = require('ntos/mm/virtual-memory');
+const ProcessManager = require('ntos/ps/process');
+const GuestMemory = require('win32/guest-memory');
+const NtAbi = require('win32/nt-abi');
+const Ntfs = require('ntos/fs/ntfs');
+const Smp = require('ntos/ke/smp');
+const Clock = require('ntos/ke/clock');
 
 function assert(cond, msg) {
     if (!cond) {
@@ -45,9 +54,6 @@ function run() {
     assert(m.total > 0 && m.used > 0, 'meminfo');
 
     // Memory Manager real: PFN (frames fisicos) + paging (VA->PA de verdade)
-    const Pfn = require('ntos/mm/pfn');
-    const Paging = require('ntos/mm/paging');
-    const VirtualMemory = require('ntos/mm/virtual-memory');
 
     const freeBefore = Pfn.freeCount();
     const frame1 = Pfn.allocPage();
@@ -82,6 +88,17 @@ function run() {
     assert(ran === 2, 'sched passo 2');
     assert(Scheduler.count() === 0, 'sched reap');
 
+    // Process Manager real: EPROCESS/KTHREAD com os offsets do ntoskrnl.exe
+    // (RE Win10 22H2): pid @0x440, ActiveProcessLinks @0x448, ApcState @0xB8
+    const systemProcess = ProcessManager.getSystemProcess();
+    assert(GuestMemory.readGuest64(systemProcess + NtAbi.EPROCESS.UNIQUE_PROCESS_ID) === 4,
+           'System EPROCESS com pid 4');
+    assert(ProcessManager.listActiveProcesses()
+               .some(p => p.pid === 4 && p.name === 'System'),
+           'System na cadeia PsActiveProcessHead');
+    assert(ProcessManager.getCurrentProcess() === systemProcess,
+           'processo corrente no boot = System (ApcState.Process)');
+
     // Object Manager: namespace, handles, refcount, FS montado
     const h1 = ObjectManager.open('\\FS\\README');
     assert(h1 > 0, 'objmgr open arquivo via \\FS');
@@ -103,7 +120,6 @@ function run() {
     assert(irpBad.status === IoManager.STATUS.NOT_FOUND, 'iom IRP dispositivo inexistente');
 
     // NTFS: monta o disco slave IDE, lista a raiz e le HELLO.TXT de verdade
-    const Ntfs = require('ntos/fs/ntfs');
     const ntfs = Ntfs.mount(1);
     assert(ntfs.exists('/HELLO.TXT'), 'ntfs existe');
     assert(ntfs.list().indexOf('/HELLO.TXT') >= 0, 'ntfs list');
@@ -169,34 +185,32 @@ function run() {
     checkNativeDriver('\\Device\\Registry', 'registry-ok');
 
     // Power Manager: IRP_MJ_POWER SET/QUERY_POWER com estado real rastreado
-    const DevicePowerState = require('win32/nt-abi').DEVICE_POWER_STATE;
     assert(ObjectManager.lookup('\\Device\\Power'), 'power carregado no boot');
     let powerRead = IoManager.read('\\Device\\Power');
     assert(powerRead.result === 'power-D0', 'device comeca em D0');
     const setD2 = IoManager.setDevicePowerState('\\Device\\Power',
-                                                DevicePowerState.D2);
+                                                NtAbi.DEVICE_POWER_STATE.D2);
     assert(setD2.status === IoManager.STATUS.SUCCESS,
            'SET_POWER D2 aceito (status=0x' + (setD2.status >>> 0).toString(16) + ')');
     powerRead = IoManager.read('\\Device\\Power');
     assert(powerRead.result === 'power-D2',
            'driver entrou em D2 -> "' + powerRead.result + '"');
-    assert(IoManager.getDevicePowerState('\\Device\\Power') === DevicePowerState.D2,
+    assert(IoManager.getDevicePowerState('\\Device\\Power') === NtAbi.DEVICE_POWER_STATE.D2,
            'Power Manager registrou D2 (PoSetPowerState)');
     const queryD3 = IoManager.queryDevicePowerState('\\Device\\Power',
-                                                    DevicePowerState.D3);
+                                                    NtAbi.DEVICE_POWER_STATE.D3);
     assert(queryD3.status === IoManager.STATUS.SUCCESS,
            'QUERY_POWER D3 aceito (status=0x' + (queryD3.status >>> 0).toString(16) + ')');
     powerRead = IoManager.read('\\Device\\Power');
     assert(powerRead.result === 'power-D2', 'QUERY_POWER nao muda o estado');
-    IoManager.setDevicePowerState('\\Device\\Power', DevicePowerState.D0);
+    IoManager.setDevicePowerState('\\Device\\Power', NtAbi.DEVICE_POWER_STATE.D0);
     powerRead = IoManager.read('\\Device\\Power');
     assert(powerRead.result === 'power-D0', 'voltou a D0');
-    assert(IoManager.getDevicePowerState('\\Device\\Power') === DevicePowerState.D0,
+    assert(IoManager.getDevicePowerState('\\Device\\Power') === NtAbi.DEVICE_POWER_STATE.D0,
            'Power Manager registrou D0');
 
     // SMP: CPUs reais descobertos via ACPI MADT; APs online via INIT-SIPI;
     // codigo nativo executado DE VERDADE em paralelo nos outros CPUs
-    const Smp = require('ntos/ke/smp');
     const cpuTotal = Smp.discoveredCpuCount();
     assert(cpuTotal >= 1, 'ACPI MADT com ao menos o BSP');
     if (cpuTotal > 1 && Smp.onlineCpuCount() < cpuTotal) {
@@ -290,9 +304,8 @@ function run() {
     Ntoskrnl.loadDriver('/event.sys');
     assert(ObjectManager.lookup('\\Device\\Event'), 'event device criado');
     {
-        const KernelClock = require('ntos/ke/clock');
-        const wakeDeadline = KernelClock.uptimeMs() + 80;
-        while (KernelClock.uptimeMs() < wakeDeadline) {
+        const wakeDeadline = Clock.uptimeMs() + 80;
+        while (Clock.uptimeMs() < wakeDeadline) {
             Ntoskrnl.runKernelTasks();
             Scheduler.tick();
         }
@@ -337,9 +350,8 @@ function run() {
     Ntoskrnl.loadDriver('/syncio.sys');
     assert(ObjectManager.lookup('\\Device\\SyncIo'), 'syncio device criado');
     {
-        const KernelClock2 = require('ntos/ke/clock');
-        const timerDeadline = KernelClock2.uptimeMs() + 1300;
-        while (KernelClock2.uptimeMs() < timerDeadline) {
+                const timerDeadline = Clock.uptimeMs() + 1300;
+        while (Clock.uptimeMs() < timerDeadline) {
             Ntoskrnl.runKernelTasks();
             Scheduler.tick();
         }

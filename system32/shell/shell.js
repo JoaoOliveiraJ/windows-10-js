@@ -11,6 +11,8 @@ const Memory = require('ntos/mm/memory');
 const SystemCall = require('ntos/ex/syscalls');
 const ObjectManager = require('ntos/ob/object-manager');
 const PeLoader = require('win32/pe-loader');
+const SelfTest = require('ntos/test/self-test');
+const Ntoskrnl = require('win32/ntoskrnl');
 
 const HELP = [
     'help              esta ajuda',
@@ -124,13 +126,13 @@ function cmdKill(args) {
 }
 
 function cmdSelftest() {
-    require('ntos/test/self-test').run();
+    SelfTest.run();
     Console.print('selftest passou');
 }
 
 function cmdLoadDriver(args) {
     try {
-        require('win32/ntoskrnl').loadDriver(normPath(args[0]));
+        Ntoskrnl.loadDriver(normPath(args[0]));
         Console.print('driver carregado, DriverEntry OK: ' + args[0]);
     } catch (e) {
         Console.print('erro ao carregar driver: ' + e.message);

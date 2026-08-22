@@ -62,6 +62,34 @@ function writeGuestBytes(address, bytes) {
         GuestMemory.writeGuest8(address + i, bytes[i]);
 }
 
+// formata uma string printf-style lendo args do convidado:
+// %d %i %u %x %X %p %c %% %s (C-string) %S/%wZ (UNICODE_STRING*)
+function formatGuestText(formatText, args) {
+    let out = '';
+    let argIndex = 0;
+    for (let i = 0; i < formatText.length; i++) {
+        if (formatText[i] !== '%') { out += formatText[i]; continue; }
+        let spec = formatText[++i];
+        if (spec === '%') { out += '%'; continue; }
+        if (spec === 'w' && formatText[i + 1] === 'Z') { spec = 'wZ'; i++; }
+        const value = args[argIndex++] || 0;
+        switch (spec) {
+        case 'd': case 'i': out += String(value | 0); break;
+        case 'u': out += String(value >>> 0); break;
+        case 'x': out += (value >>> 0).toString(16); break;
+        case 'X': out += (value >>> 0).toString(16).toUpperCase(); break;
+        case 'p': out += '0x' + (value >>> 0).toString(16).padStart(8, '0'); break;
+        case 'c': out += String.fromCharCode(value & 0xFF); break;
+        case 's': out += readGuestCString(value); break;
+        case 'S': case 'wZ':
+            out += readUnicodeString(value);
+            break;
+        default: out += '%' + spec;
+        }
+    }
+    return out;
+}
+
 module.exports = { readGuestCString, readGuestWideString, readUnicodeString,
                    readAnsiString, writeStringFields, writeGuestWideString,
-                   writeGuestBytes };
+                   writeGuestBytes, formatGuestText };

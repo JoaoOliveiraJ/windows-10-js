@@ -10,18 +10,22 @@ const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
 const AtaPio = require('drivers/storage/ata-pio');
 const Services = require('ntos/cm/services');
+const ConsoleDriver = require('drivers/console/console');
+const KeyboardDriver = require('drivers/input/keyboard');
+const Ntfs = require('ntos/fs/ntfs');
+const PciBus = require('drivers/bus/pci');
 
 function init() {
     os.debugPrint('[boot] fase 1: I/O manager + drivers + servicos');
 
     IoManager.init();
-    require('drivers/console/console').DriverEntry(IoManager);
-    require('drivers/input/keyboard').DriverEntry(IoManager);
+    ConsoleDriver.DriverEntry(IoManager);
+    KeyboardDriver.DriverEntry(IoManager);
 
     // NTFS: disco slave IDE vira D: (se presente)
     if (AtaPio.present(1)) {
         try {
-            const ntfs = require('ntos/fs/ntfs').mount(1);
+            const ntfs = Ntfs.mount(1);
             ObjectManager.mount('\\NTFS', ntfs);
             ObjectManager.createSymlink('\\DosDevices\\D:', '\\NTFS');
             os.debugPrint('[boot] NTFS montado em D:');
@@ -32,7 +36,7 @@ function init() {
 
     // barramento PCI PRIMEIRO (como o pci.sys do NT): enumera o hardware e
     // cria os PDOs com recursos reais, antes dos drivers funcionais
-    const pciFunctionCount = require('drivers/bus/pci').init();
+    const pciFunctionCount = PciBus.init();
     os.debugPrint('[boot] PCI: ' + pciFunctionCount + ' funcoes');
 
     // drivers de servico lidos do Registry + PnP start

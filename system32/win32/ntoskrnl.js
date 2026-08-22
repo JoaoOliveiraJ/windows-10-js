@@ -5,6 +5,10 @@
 // ===========================================================================
 
 const GROUP_ORDER = require('win32/ntoskrnl/groups');
+const KeTimer = require('ntos/ke/timer');
+const KeDpc = require('ntos/ke/dpc');
+const WorkItems = require('ntos/io/work-items');
+const IoTimer = require('ntos/io/io-timer');
 
 const exportNames = [];
 const exportHandlers = [];
@@ -39,19 +43,22 @@ function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
                            arg8, arg9, arg10, arg11, arg12);
 }
 
-// o kernel drena timers + DPCs + work items no idle loop (como o NT ao cair
-// de DISPATCH_LEVEL)
+// o kernel drena timers + DPCs + work items + io timers no idle loop (como o
+// NT ao cair de DISPATCH_LEVEL)
 function runKernelTasks() {
-    require('ntos/ke/timer').checkTimers();
-    require('ntos/ke/dpc').runQueue();
-    require('ntos/io/work-items').runQueue();
-    require('ntos/io/io-timer').checkIoTimers();
+    KeTimer.checkTimers();
+    KeDpc.runQueue();
+    WorkItems.runQueue();
+    IoTimer.checkIoTimers();
 }
 
 // o C (js_win32_dispatch) procura globalThis.Ntoskrnl.handle
 globalThis.Ntoskrnl = { handle };
 
 const Lifecycle = require('win32/ntoskrnl/lifecycle');
+
+// o mm.js resolve exports pela tabela montada aqui (registro, sem ciclo)
+require('win32/ntoskrnl/mm').registerRoutineLookup(lookup);
 
 module.exports = {
     lookup,

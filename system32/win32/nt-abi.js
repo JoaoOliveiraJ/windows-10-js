@@ -220,4 +220,34 @@ module.exports = {
         FREE_HEAD: 0x28,         // u32 (cadeia: next no 1o dword do bloco)
         SIZE: 0x80,              // sizeof real no NT x64
     },
+    // EPROCESS/KPROCESS/KTHREAD — offsets CONFIRMADOS por disassembly do
+    // ntoskrnl.exe do Windows 10 22H2 desta maquina (RE real):
+    //   IoGetCurrentProcess: mov rax,gs:[0x188] (Prcb.CurrentThread);
+    //                        mov rax,[rax+0xB8] (KTHREAD.ApcState.Process)
+    //   PsGetProcessId:      mov rax,[rcx+0x440] (EPROCESS.UniqueProcessId)
+    //   PsGetCurrentProcessId:  [thread+0x478] (KTHREAD.Cid.UniqueProcess)
+    //   PsGetCurrentThreadId:   [thread+0x480] (KTHREAD.Cid.UniqueThread)
+    //   KeGetCurrentIrql:    mov rax,cr8 (IRQL mora no TPR/CR8 no NT)
+    KTHREAD: {
+        APC_STATE: 0x98,         // KAPC_STATE embutido
+        APC_STATE_PROCESS: 0xB8, // ApcState.Process (0x98 + 0x20) — RE
+        CID: 0x478,              // CLIENT_ID
+        CID_UNIQUE_PROCESS: 0x478,
+        CID_UNIQUE_THREAD: 0x480,
+        SIZE: 0x4C0,
+    },
+    EPROCESS: {
+        // KPROCESS embutido comeca em 0x00 (DISPATCHER_HEADER etc.)
+        DIRECTORY_TABLE_BASE: 0x28,   // KPROCESS.DTB (CR3 do processo)
+        UNIQUE_PROCESS_ID: 0x440,     // RE confirmado
+        ACTIVE_PROCESS_LINKS: 0x448,  // RE confirmado (LIST_ENTRY global)
+        CREATE_TIME: 0x458,
+        TOKEN: 0x4B8,                 // RE confirmado
+        PEB: 0x550,                   // RE (lista de offsets publica)
+        IMAGE_FILE_NAME: 0x5A8,       // RE (15 bytes)
+        ACTIVE_THREADS: 0x5F0,        // Win10 x64 (comunidade/RE)
+        EXIT_TIME: 0x608,
+        SIZE: 0xA00,
+        TYPE_PROCESS: 3,              // KOBJECTS ProcessObject
+    },
 };

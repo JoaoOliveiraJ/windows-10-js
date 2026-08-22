@@ -106,6 +106,10 @@ module.exports = {
         'InterlockedPopEntryList',
         'ExInterlockedInsertTailList',
         'ExInterlockedRemoveHeadList',
+        'strlen', 'strcmp', 'strncmp', 'strcpy', 'strncpy', 'strcat',
+        'strchr', 'strstr',
+        'sprintf', 'snprintf',
+        'RtlRandom', 'RtlRandomEx',
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
@@ -388,6 +392,95 @@ module.exports = {
             }
             spinLockRelease(spinLockPointer, oldIrql);
             return removed;
+        },
+        // strlen(strPtr) -> comprimento
+        (stringPointer) => GuestStrings.readGuestCString(stringPointer).length,
+        // strcmp(a, b) -> <0/0/>0
+        (pointerA, pointerB) => {
+            const a = GuestStrings.readGuestCString(pointerA);
+            const b = GuestStrings.readGuestCString(pointerB);
+            return a < b ? -1 : a > b ? 1 : 0;
+        },
+        // strncmp(a, b, n)
+        (pointerA, pointerB, count) => {
+            const a = GuestStrings.readGuestCString(pointerA).slice(0, count);
+            const b = GuestStrings.readGuestCString(pointerB).slice(0, count);
+            return a < b ? -1 : a > b ? 1 : 0;
+        },
+        // strcpy(dest, src) -> dest
+        (destPointer, srcPointer) => {
+            const text = GuestStrings.readGuestCString(srcPointer);
+            for (let i = 0; i <= text.length; i++)
+                GuestMemory.writeGuest8(destPointer + i,
+                                        i < text.length ? text.charCodeAt(i) : 0);
+            return destPointer;
+        },
+        // strncpy(dest, src, n) -> dest
+        (destPointer, srcPointer, count) => {
+            const text = GuestStrings.readGuestCString(srcPointer);
+            for (let i = 0; i < count; i++)
+                GuestMemory.writeGuest8(destPointer + i,
+                                        i < text.length ? text.charCodeAt(i) : 0);
+            return destPointer;
+        },
+        // strcat(dest, src) -> dest
+        (destPointer, srcPointer) => {
+            const current = GuestStrings.readGuestCString(destPointer);
+            const suffix = GuestStrings.readGuestCString(srcPointer);
+            const combined = current + suffix;
+            for (let i = 0; i <= combined.length; i++)
+                GuestMemory.writeGuest8(destPointer + i,
+                                        i < combined.length ? combined.charCodeAt(i) : 0);
+            return destPointer;
+        },
+        // strchr(str, c) -> ponteiro p/ a 1a ocorrencia ou 0
+        (stringPointer, character) => {
+            const text = GuestStrings.readGuestCString(stringPointer);
+            const index = text.indexOf(String.fromCharCode(character & 0xFF));
+            return index < 0 ? 0 : stringPointer + index;
+        },
+        // strstr(str, sub) -> ponteiro p/ a 1a ocorrencia ou 0
+        (stringPointer, substringPointer) => {
+            const text = GuestStrings.readGuestCString(stringPointer);
+            const needle = GuestStrings.readGuestCString(substringPointer);
+            const index = text.indexOf(needle);
+            return index < 0 ? 0 : stringPointer + index;
+        },
+        // sprintf(buf, fmt, ...) -> chars escritos (formatador do kernel)
+        (bufferPointer, formatPointer, a1, a2, a3, a4, a5, a6) => {
+            const text = GuestStrings.formatGuestText(
+                GuestStrings.readGuestCString(formatPointer),
+                [a1, a2, a3, a4, a5, a6]);
+            for (let i = 0; i <= text.length; i++)
+                GuestMemory.writeGuest8(bufferPointer + i,
+                                        i < text.length ? text.charCodeAt(i) : 0);
+            return text.length;
+        },
+        // snprintf(buf, size, fmt, ...) -> chars que seriam escritos
+        (bufferPointer, bufferSize, formatPointer, a1, a2, a3, a4, a5) => {
+            const text = GuestStrings.formatGuestText(
+                GuestStrings.readGuestCString(formatPointer),
+                [a1, a2, a3, a4, a5]);
+            const writable = Math.min(text.length, (bufferSize >>> 0) - 1);
+            for (let i = 0; i < writable; i++)
+                GuestMemory.writeGuest8(bufferPointer + i, text.charCodeAt(i));
+            if (bufferSize > 0)
+                GuestMemory.writeGuest8(bufferPointer + writable, 0);
+            return text.length;
+        },
+        // RtlRandomEx(seedPtr): LCG das constantes documentadas (VC/NT)
+        (seedPointer) => {
+            let seed = GuestMemory.readGuest32(seedPointer) >>> 0;
+            seed = (seed * 214013 + 2531011) >>> 0;
+            GuestMemory.writeGuest32(seedPointer, seed);
+            return (seed >>> 16) & 0x7FFF;
+        },
+        // RtlRandom(seedPtr): idem (mesma familia documentada)
+        (seedPointer) => {
+            let seed = GuestMemory.readGuest32(seedPointer) >>> 0;
+            seed = (seed * 214013 + 2531011) >>> 0;
+            GuestMemory.writeGuest32(seedPointer, seed);
+            return (seed >>> 16) & 0x7FFF;
         },
     ],
 };

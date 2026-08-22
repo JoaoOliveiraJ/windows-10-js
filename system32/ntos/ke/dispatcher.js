@@ -15,6 +15,7 @@ const KeDpc = require('ntos/ke/dpc');
 const KeTimer = require('ntos/ke/timer');
 const Clock = require('ntos/ke/clock');
 const KernelThreads = require('ntos/ps/kernel-threads');
+const WorkItems = require('ntos/io/work-items');
 const NtAbi = require('win32/nt-abi');
 
 const HEADER = NtAbi.DISPATCHER_HEADER;
@@ -102,7 +103,7 @@ function timeoutPointerToMs(timeoutPointer) {
 function pumpKernel() {
     KeTimer.checkTimers();
     KeDpc.runQueue();
-    require('ntos/io/work-items').runQueue();
+    WorkItems.runQueue();
 }
 
 // KeWaitForSingleObject(object, reason, mode, alertable, timeoutPtr)

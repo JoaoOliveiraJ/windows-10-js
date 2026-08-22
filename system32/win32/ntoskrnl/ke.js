@@ -32,6 +32,13 @@ function releaseSpinLock(pointer, newIrql) {
     Irql.lowerIrql(newIrql);
 }
 
+// formata uma string printf-style lendo args do convidado:
+// %d %i %u %x %X %p %c %% %s (C-string) %S/%wZ (UNICODE_STRING*)
+const formatGuestText = GuestStrings.formatGuestText;
+
+// contador de regiao critica (KeEnter/LeaveCriticalRegion)
+let criticalRegionCount = 0;
+
 module.exports = {
     names: [
         'DbgPrint',
@@ -76,12 +83,18 @@ module.exports = {
         'KeSetImportanceDpc',              // (dpcPtr, importance)
         'KeSetTargetProcessorDpc',         // (dpcPtr, processorNumber)
         'KeFlushQueuedDpcs',               // drena a fila de DPCs agora
+        'KeEnterCriticalRegion',           // contador de regiao critica real
+        'KeLeaveCriticalRegion',
+        'KeAreApcsDisabled',
     ],
     handlers: [
-        // DbgPrint(formatPtr): texto do convidado -> serial
-        (formatPointer) => {
-            os.debugPrint('[driver] ' +
-                GuestStrings.readGuestCString(formatPointer).replace(/\r?\n$/, ''));
+        // DbgPrint(formatPtr, args...): printf real do kernel — formata
+        // %d/%u/%x/%s/%wZ etc. lendo os args do convidado
+        (formatPointer, arg1, arg2, arg3, arg4, arg5, arg6) => {
+            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const formatted = formatGuestText(formatText,
+                [arg1, arg2, arg3, arg4, arg5, arg6]);
+            os.debugPrint('[driver] ' + formatted.replace(/\r?\n$/, ''));
             return 0;
         },
         // KeQuerySystemTime(out u64): intervalos de 100ns desde 1601
@@ -261,5 +274,11 @@ module.exports = {
         },
         // KeFlushQueuedDpcs(): drena a fila de DPCs na hora (como o NT)
         () => { KeDpc.runQueue(); return 1; },
+        // KeEnterCriticalRegion/KeLeaveCriticalRegion: contador real de
+        // regiao critica da "thread" corrente (kernel APCs desabilitados)
+        () => { criticalRegionCount++; return 0; },
+        () => { if (criticalRegionCount > 0) criticalRegionCount--; return 0; },
+        // KeAreApcsDisabled() -> 1 se dentro de regiao critica
+        () => criticalRegionCount > 0 ? 1 : 0,
     ],
 };

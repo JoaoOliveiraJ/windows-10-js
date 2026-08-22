@@ -13,6 +13,13 @@
 const NtAbi = require('win32/nt-abi');
 const GuestMemory = require('win32/guest-memory');
 
+// quem despacha power IRPs para baixo na pilha (registrado pelo I/O manager
+// no carregamento — quebra o ciclo io-manager<->power-manager)
+let powerIrpDispatcher = null;
+function registerPowerIrpDispatcher(dispatchFunction) {
+    powerIrpDispatcher = dispatchFunction;
+}
+
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
 // estado de energia corrente por device (devicePointer -> DEVICE_POWER_STATE)
@@ -63,9 +70,7 @@ function startNextPowerRequest(devicePointer) {
     const queue = pendingPowerRequests.get(devicePointer);
     if (!queue || queue.length === 0) return;
     const nextIrpPointer = queue.shift();
-    // despacha via I/O Manager (require tardio p/ evitar ciclo de modulos)
-    require('ntos/io/io-manager').dispatchNativePowerIrp(devicePointer,
-                                                         nextIrpPointer);
+    powerIrpDispatcher(devicePointer, nextIrpPointer);
 }
 
 // PoCallDriver(device, irp): desce o IRP pela pilha AttachedDevice; no fundo
@@ -74,11 +79,10 @@ function callDriverDownTheStack(devicePointer, ioRequestPointer) {
     const attachedDevice = GuestMemory.readGuest32(devicePointer +
                                                    DEVICE.ATTACHED_DEVICE);
     if (!attachedDevice) return 0;   // STATUS_SUCCESS: fundo da pilha
-    return require('ntos/io/io-manager').dispatchNativePowerIrp(attachedDevice,
-                                                                ioRequestPointer);
+    return powerIrpDispatcher(attachedDevice, ioRequestPointer);
 }
 
 module.exports = { getDevicePowerState, setPowerState, forgetDevice,
                    queuePowerRequest, markPowerRequestStarted,
                    markPowerRequestDone, startNextPowerRequest,
-                   callDriverDownTheStack };
+                   callDriverDownTheStack, registerPowerIrpDispatcher };

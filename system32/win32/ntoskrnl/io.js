@@ -11,6 +11,10 @@ const ObjectManager = require('ntos/ob/object-manager');
 const WorkItems = require('ntos/io/work-items');
 const Lifecycle = require('win32/ntoskrnl/lifecycle');
 const PowerManager = require('ntos/po/power-manager');
+const IoManager = require('ntos/io/io-manager');
+const IoTimer = require('ntos/io/io-timer');
+const KernelThreads = require('ntos/ps/kernel-threads');
+const Process = require('ntos/ps/process');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -81,7 +85,7 @@ function deleteDevice(devicePointer) {
     }
     GuestMemory.guestFreeBytes(devicePointer);
     PowerManager.forgetDevice(devicePointer);
-    require('ntos/io/io-timer').forgetDevice(devicePointer);
+    IoTimer.forgetDevice(devicePointer);
     return 0;
 }
 
@@ -181,6 +185,7 @@ module.exports = {
         'IoCancelIrp',                    // (irpPtr) — cancela de verdade
         'IoAllocateDriverObjectExtension',   // (drvObj, tag, size, outPtr)
         'IoGetDriverObjectExtension',        // (drvObj, tag) -> extPtr
+        'IoGetCurrentProcess',               // () -> pseudo-EPROCESS (System)
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -221,10 +226,10 @@ module.exports = {
         // IoCompleteRequest(irpPtr, priorityBoost): conclusao real — sobe a
         // pilha chamando as completion routines (ver ntos/io/io-manager.js)
         (ioRequestPointer, _priorityBoost) =>
-            require('ntos/io/io-manager').iofCompleteRequest(ioRequestPointer),
+            IoManager.iofCompleteRequest(ioRequestPointer),
         // IofCompleteRequest: idem (IoCompleteRequest e macro p/ ela)
         (ioRequestPointer, _priorityBoost) =>
-            require('ntos/io/io-manager').iofCompleteRequest(ioRequestPointer),
+            IoManager.iofCompleteRequest(ioRequestPointer),
         // IoAllocateWorkItem(devicePtr) -> itemPointer
         (devicePointer) => {
             const itemPointer = GuestMemory.guestAllocBytes(NtAbi.IO_WORKITEM.SIZE);
@@ -244,10 +249,10 @@ module.exports = {
         },
         // IoCallDriver(devicePtr, irpPtr) / IofCallDriver: desce um nivel
         (devicePointer, ioRequestPointer) =>
-            require('ntos/io/io-manager').iofCallDriver(devicePointer,
+            IoManager.iofCallDriver(devicePointer,
                                                         ioRequestPointer),
         (devicePointer, ioRequestPointer) =>
-            require('ntos/io/io-manager').iofCallDriver(devicePointer,
+            IoManager.iofCallDriver(devicePointer,
                                                         ioRequestPointer),
         // IoAttachDeviceToDeviceStack(sourcePtr, targetPtr) -> topo anterior
         (sourcePointer, targetPointer) =>
@@ -262,27 +267,27 @@ module.exports = {
         //                              eventPtr, iosbPtr) -> IRP
         (major, devicePointer, bufferPointer, length, byteOffsetPointer,
          eventPointer, ioStatusPointer) =>
-            require('ntos/io/io-manager').buildSynchronousFsdRequest(
+            IoManager.buildSynchronousFsdRequest(
                 major, devicePointer, bufferPointer, length, byteOffsetPointer,
                 eventPointer, ioStatusPointer),
         // IoBuildDeviceIoControlRequest(code, devPtr, inPtr, inLen, outPtr,
         //                               outLen, internal, eventPtr, iosbPtr)
         (ioctlCode, devicePointer, inputBuffer, inputLength, outputBuffer,
          outputLength, internal, eventPointer, ioStatusPointer) =>
-            require('ntos/io/io-manager').buildDeviceIoControlRequest(
+            IoManager.buildDeviceIoControlRequest(
                 ioctlCode, devicePointer, inputBuffer, inputLength,
                 outputBuffer, outputLength, internal, eventPointer,
                 ioStatusPointer),
         // IoInitializeTimer(devPtr, routinePtr, contextPtr)
         (devicePointer, routinePointer, contextPointer) =>
-            require('ntos/io/io-timer').initializeTimer(devicePointer,
+            IoTimer.initializeTimer(devicePointer,
                 routinePointer, contextPointer),
         // IoStartTimer(devPtr)
         (devicePointer) =>
-            require('ntos/io/io-timer').startTimer(devicePointer),
+            IoTimer.startTimer(devicePointer),
         // IoStopTimer(devPtr)
         (devicePointer) =>
-            require('ntos/io/io-timer').stopTimer(devicePointer),
+            IoTimer.stopTimer(devicePointer),
         // IoQueueWorkItemEx(itemPtr, routineExPtr, queueType, contextPtr):
         // a routine recebe (ioObject, context, ioWorkItem) — 3 args
         (itemPointer, routinePointer, queueType, contextPointer) => {
@@ -322,7 +327,7 @@ module.exports = {
         // IoFreeMdl(mdlPtr)
         (mdlPointer) => { GuestMemory.guestFreeBytes(mdlPointer); return 0; },
         // IoGetCurrentThread() -> handle da thread nativa corrente
-        () => require('ntos/ps/kernel-threads').getCurrentThreadHandle(),
+        () => KernelThreads.getCurrentThreadHandle(),
         // IoSetCancelRoutine(irpPtr, routinePtr) -> routine anterior (o NT
         // devolve a cancel routine previamente registrada no IRP)
         (ioRequestPointer, routinePointer) => {
@@ -362,5 +367,8 @@ module.exports = {
         (driverObjectPointer, tagPointer) =>
             driverExtensions.get((driverObjectPointer >>> 0) + ':' +
                                  (tagPointer >>> 0)) || 0,
+        // IoGetCurrentProcess(): o MESMO caminho do NT — thread corrente ->
+        // KTHREAD.ApcState.Process (offsets RE do ntoskrnl Win10 22H2)
+        () => Process.getCurrentProcess(),
     ],
 };

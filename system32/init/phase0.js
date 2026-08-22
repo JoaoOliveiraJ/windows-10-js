@@ -16,6 +16,7 @@ const Pfn = require('ntos/mm/pfn');
 const SharedUserData = require('ntos/mm/shared-user-data');
 const Smp = require('ntos/ke/smp');
 const Clock = require('ntos/ke/clock');
+const Scheduler = require('ntos/ps/scheduler');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -47,6 +48,7 @@ function init() {
     Pfn.init();                 // memory manager: alocador de frames fisicos
     SharedUserData.init();      // pagina KUSER_SHARED_DATA mapeada (drivers WDK)
     Smp.init();                 // SMP: ACPI MADT + INIT-SIPI dos APs (LAPIC)
+    Scheduler.init();           // Process Manager: System EPROCESS + KTHREAD
 
     ObjectManager.createDirectory('\\Device');
     ObjectManager.createDirectory('\\Driver');

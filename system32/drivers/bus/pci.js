@@ -213,6 +213,7 @@ function createPdos() {
 function init() {
     const functionCount = enumerate();
     createPdos();
+    IoManager.registerPdoNativeAnswerer(answerNativePnpIrp);
     os.debugPrint('[pci] ' + functionCount + ' funcoes PCI enumeradas:');
     for (const pciFunction of devices)
         os.debugPrint('[pci]   ' + pciFunction.bus + ':' + pciFunction.device +
