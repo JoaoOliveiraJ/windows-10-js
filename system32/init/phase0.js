@@ -29,10 +29,14 @@ function dwordBytes(value) {
 }
 
 // servicos = drivers carregados na fase 1 (Start: 0=boot, 1=system, 2=auto)
-function seedService(name, driverFile, start) {
+// hardwareId (opcional): id PnP estilo INF — o gerenciador PnP casa com o
+// hardware enumerado e chama o AddDevice do driver com o PDO
+function seedService(name, driverFile, start, hardwareId) {
     const handle = Registry.openOrCreate('\\Registry\\Machine\\System\\Services\\' + name);
     Registry.setValue(handle, 'DriverFile', 1, asciiBytes(driverFile));
     Registry.setValue(handle, 'Start', 4, dwordBytes(start));
+    if (hardwareId)
+        Registry.setValue(handle, 'HardwareId', 1, asciiBytes(hardwareId));
     Registry.closeHandle(handle);
 }
 
@@ -72,6 +76,8 @@ function init() {
     seedService('rtlansi',   'rtlansi.sys',   1);
     seedService('registry',  'registry.sys',  1);
     seedService('power',     'power.sys',     1);
+    // VGA PCI (1234:1111 bochs/std): PnP casa o driver com o PDO pelo id
+    seedService('pcidemo',   'pcidemo.sys',   1, 'PCI\\VEN_1234&DEV_1111');
 }
 
 module.exports = { init };

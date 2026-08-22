@@ -26,7 +26,7 @@ function firstStackLocation(irpAddress, stackCount) {
 // primeiro IofCallDriver: CL/CSL ainda apontam ACIMA do topo.
 function build(address, { major, minor, buffer, bufferLength, deviceObject,
                           power, ioctl, stackCount, fileObject, byteOffset,
-                          userEvent, userIosb, userBuffer }) {
+                          userEvent, userIosb, userBuffer, resources }) {
     const count = Math.max(1, stackCount || 1);
     for (let i = 0; i < sizeFor(count); i += 4)
         GuestMemory.writeGuest32(address + i, 0);
@@ -62,6 +62,12 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject,
         GuestMemory.writeGuest32(stack + SL.IOCTL_CODE, ioctl.code);
         GuestMemory.writeGuest32(stack + SL.IOCTL_IN_LENGTH, ioctl.inputLength || 0);
         GuestMemory.writeGuest32(stack + SL.IOCTL_OUT_LENGTH, bufferLength);
+    }
+    // IRP_MJ_PNP/START_DEVICE: Parameters.StartDevice.AllocatedResources[*]
+    if (resources) {
+        GuestMemory.writeGuest64(stack + SL.PNP_ALLOCATED_RESOURCES, resources);
+        GuestMemory.writeGuest64(stack + SL.PNP_ALLOCATED_RESOURCES_TRANSLATED,
+                                 resources);
     }
 }
 

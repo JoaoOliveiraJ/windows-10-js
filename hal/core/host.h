@@ -32,6 +32,8 @@ void  host_heap_info(size_t *total, size_t *used);
 void     host_outb(uint16_t port, uint8_t val);
 uint8_t  host_inb(uint16_t port);
 uint16_t host_inw(uint16_t port);
+void     host_outl(uint16_t port, uint32_t val);
+uint32_t host_inl(uint16_t port);
 
 /* teclado: -1 se vazio (scancode traduzido p/ ASCII; setas = 0x100+) */
 int host_getkey(void);

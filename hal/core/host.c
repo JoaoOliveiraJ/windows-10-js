@@ -27,6 +27,16 @@ uint16_t host_inw(uint16_t port) {
     return v;
 }
 
+void host_outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %1" :: "a"(val), "Nd"(port));
+}
+
+uint32_t host_inl(uint16_t port) {
+    uint32_t v;
+    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
 /* ---- serial COM1 (debug) ---- */
 
 #define COM1 ((uint16_t)0x3F8)

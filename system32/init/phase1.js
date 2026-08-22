@@ -30,6 +30,11 @@ function init() {
         }
     }
 
+    // barramento PCI PRIMEIRO (como o pci.sys do NT): enumera o hardware e
+    // cria os PDOs com recursos reais, antes dos drivers funcionais
+    const pciFunctionCount = require('drivers/bus/pci').init();
+    os.debugPrint('[boot] PCI: ' + pciFunctionCount + ' funcoes');
+
     // drivers de servico lidos do Registry + PnP start
     const loaded = Services.startBootDrivers();
     os.debugPrint('[boot] servicos carregados: ' + loaded);

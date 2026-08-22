@@ -41,6 +41,13 @@ const STATUS = {
 // minor codes do IRP_MJ_PNP / IRP_MJ_POWER (valores reais do wdm.h)
 const IRP_MN = {
     START_DEVICE:  0,
+    QUERY_REMOVE_DEVICE: 1,
+    REMOVE_DEVICE: 2,
+    CANCEL_REMOVE_DEVICE: 3,
+    STOP_DEVICE:   4,
+    CANCEL_STOP_DEVICE: 6,
+    QUERY_CAPABILITIES: 9,
+    SURPRISE_REMOVAL: 0x17,
     WAIT_WAKE:     0,
     POWER_SEQUENCE: 1,
     SET_POWER:     2,
@@ -295,6 +302,7 @@ function callNativeDriver(device, ioRequestPacket) {
         power: ioRequestPacket.params.power,
         stackCount,
         fileObject: fileObjectPointer,
+        resources: ioRequestPacket.params.resources,
         ioctl: ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL
             ? { code: ioRequestPacket.params.controlCode >>> 0,
                 inputLength: dataLength }
@@ -402,7 +410,8 @@ function dispatchNativePowerIrp(devicePointer, ioRequestPointer) {
     return ioStatus.status !== 0 ? ioStatus.status : guestStatus;
 }
 
-// IoCallDriver: entrega o IRP ao driver dono do dispositivo
+// IoCallDriver: entrega o IRP ao driver dono do dispositivo (ou a pilha
+// nativa anexada ao device — PDOs nao tem driver JS, mas podem ter FDO)
 function callDriver(devicePath, ioRequestPacket) {
     const device = ObjectManager.lookup(devicePath);
     if (!device || device.type !== 'Device') {
@@ -410,8 +419,12 @@ function callDriver(devicePath, ioRequestPacket) {
         return ioRequestPacket;
     }
     const driver = device.data.driver;
-    if (driver.data.native)
+    if ((driver && driver.data.native) || device.data.stackTopPointer)
         return callNativeDriver(device, ioRequestPacket);
+    if (!driver) {
+        ioRequestPacket.status = STATUS.NOT_SUPPORTED;
+        return ioRequestPacket;
+    }
     const handler = driver.data.dispatch[ioRequestPacket.major];
     if (!handler) {
         ioRequestPacket.status = STATUS.NOT_SUPPORTED;
@@ -433,11 +446,21 @@ function deviceControl(devicePath, controlCode, parameters) {
                       Object.assign({ controlCode }, parameters)));
 }
 
-// PnP: manda IRP_MJ_PNP / IRP_MN_START_DEVICE ao device e marca o resultado
+// PnP: manda IRP_MJ_PNP / IRP_MN_START_DEVICE ao device (com os recursos de
+// hardware em Parameters.StartDevice.AllocatedResources quando existem) e
+// marca o resultado
 function pnpStartDevice(device) {
-    const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.START_DEVICE });
+    const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.START_DEVICE,
+                                                  resources: device.data.resources || 0 });
     callDriver('\\Device\\' + device.name, ioRequest);
     device.data.pnpStarted = ioRequest.status === STATUS.SUCCESS;
+    return ioRequest.status;
+}
+
+// PnP: IRP_MN_REMOVE_DEVICE (remocao real: unload, surprise etc.)
+function pnpRemoveDevice(device) {
+    const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.REMOVE_DEVICE });
+    callDriver('\\Device\\' + device.name, ioRequest);
     return ioRequest.status;
 }
 
@@ -486,4 +509,5 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    pnpStartDevice, setDevicePowerState, queryDevicePowerState,
                    getDevicePowerState, dispatchNativePowerIrp,
                    iofCallDriver, iofCompleteRequest,
-                   buildSynchronousFsdRequest, buildDeviceIoControlRequest };
+                   buildSynchronousFsdRequest, buildDeviceIoControlRequest,
+                   pnpRemoveDevice };

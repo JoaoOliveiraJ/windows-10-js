@@ -26,6 +26,14 @@ module.exports = {
         STRUCT_SIZE: 0x70 + 29 * 8,
         IO_TYPE: 4,
     },
+    // DRIVER_EXTENSION (wdm.h)
+    DRIVER_EXTENSION: {
+        DRIVER_OBJECT: 0x00,
+        ADD_DEVICE: 0x08,        // PDRIVER_ADD_DEVICE
+        COUNT: 0x10,
+        SERVICE_KEY_NAME: 0x18,  // UNICODE_STRING
+        SIZE: 0x40,
+    },
     // DEVICE_OBJECT (wdm.h x64, sizeof = 0x150)
     DEVICE_OBJECT: {
         TYPE: 0,                 // IO_TYPE_DEVICE = 3
@@ -78,6 +86,8 @@ module.exports = {
         POWER_TYPE: 0x10,            // Parameters.Power.Type (POINTER_ALIGNMENT)
         POWER_STATE: 0x18,           // Parameters.Power.State (POWER_STATE)
         POWER_SHUTDOWN_TYPE: 0x20,   // Parameters.Power.ShutdownType
+        PNP_ALLOCATED_RESOURCES: 0x08,           // StartDevice.AllocatedResources
+        PNP_ALLOCATED_RESOURCES_TRANSLATED: 0x10,
         DEVICE_OBJECT: 0x28,
         FILE_OBJECT: 0x30,
         COMPLETION_ROUTINE: 0x38,    // IoSetCompletionRoutine (macro no WDK)
