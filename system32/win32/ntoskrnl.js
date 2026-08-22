@@ -30,8 +30,10 @@ function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
     return handlerFunction(arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-// o kernel drena DPCs + work items no idle loop (como o NT ao cair de DISPATCH)
+// o kernel drena timers + DPCs + work items no idle loop (como o NT ao cair
+// de DISPATCH_LEVEL)
 function runKernelTasks() {
+    require('ntos/ke/timer').checkTimers();
     require('ntos/ke/dpc').runQueue();
     require('ntos/io/work-items').runQueue();
 }

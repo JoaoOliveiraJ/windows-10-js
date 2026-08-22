@@ -7,11 +7,12 @@
 
 const Irql = require('ntos/ke/irql');
 const KeDpc = require('ntos/ke/dpc');
+const KeTimer = require('ntos/ke/timer');
+const Clock = require('ntos/ke/clock');
 const Smp = require('ntos/ke/smp');
+const NtAbi = require('win32/nt-abi');
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
-
-const bootEpochMs = Date.now();
 
 // spin lock real: test-and-set ate estar livre; retorna o IRQL antigo
 function acquireSpinLock(pointer) {
@@ -52,6 +53,13 @@ module.exports = {
         'KeQueryActiveProcessorCount',     // () -> CPUs online (SMP real)
         'KeQueryActiveProcessors',         // () -> bitmask KAFFINITY dos online
         'KeGetProcessorNumberFromIndex',   // (index, out PROCESSOR_NUMBER)
+        'KeInitializeTimer',               // (ktimerPtr)
+        'KeInitializeTimerEx',             // (ktimerPtr, type)
+        'KeSetTimer',                      // (ktimerPtr, dueTime u64, dpcPtr)
+        'KeSetTimerEx',                    // (ktimerPtr, dueTime u64, period, dpcPtr)
+        'KeCancelTimer',                   // (ktimerPtr) -> estava na fila
+        'KeReadStateTimer',                // (ktimerPtr) -> SignalState
+        'KeDelayExecutionThread',          // (mode, alertable, intervalPtr)
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -67,9 +75,9 @@ module.exports = {
             GuestMemory.writeGuest32(outputPointer + 4, Math.floor(ntTime / 0x100000000));
             return 0;
         },
-        // KeQueryTickCount(out u64): ms desde o boot
+        // KeQueryTickCount(out u64): ms desde o boot (TSC de alta resolucao)
         (outputPointer) => {
-            const ticks = Date.now() - bootEpochMs;
+            const ticks = Math.floor(Clock.uptimeMs());
             GuestMemory.writeGuest32(outputPointer, ticks % 0x100000000);
             GuestMemory.writeGuest32(outputPointer + 4, Math.floor(ticks / 0x100000000));
             return 0;
@@ -136,5 +144,31 @@ module.exports = {
             }
             return 0;
         },
+        // KeInitializeTimer(ktimerPtr): notification timer (como o WDK)
+        (timerPointer) => {
+            KeTimer.initializeTimer(timerPointer, NtAbi.KTIMER.TIMER_NOTIFICATION);
+            return 0;
+        },
+        // KeInitializeTimerEx(ktimerPtr, type)
+        (timerPointer, timerType) => {
+            KeTimer.initializeTimer(timerPointer,
+                timerType ? NtAbi.KTIMER.TIMER_SYNCHRONIZATION
+                          : NtAbi.KTIMER.TIMER_NOTIFICATION);
+            return 0;
+        },
+        // KeSetTimer(ktimerPtr, dueTime u64, dpcPtr)
+        (timerPointer, dueTime, dpcPointer) =>
+            KeTimer.setTimer(timerPointer, dueTime, dpcPointer, 0),
+        // KeSetTimerEx(ktimerPtr, dueTime u64, periodMs, dpcPtr)
+        (timerPointer, dueTime, periodMs, dpcPointer) =>
+            KeTimer.setTimer(timerPointer, dueTime, dpcPointer, periodMs),
+        // KeCancelTimer(ktimerPtr) -> 1 se estava agendado
+        (timerPointer) => KeTimer.cancelTimer(timerPointer),
+        // KeReadStateTimer(ktimerPtr) -> SignalState
+        (timerPointer) =>
+            GuestMemory.readGuest32(timerPointer + NtAbi.KTIMER.SIGNAL_STATE),
+        // KeDelayExecutionThread(mode, alertable, intervalPtr)
+        (_waitMode, _alertable, intervalPointer) =>
+            KeTimer.delayExecutionThread(intervalPointer),
     ],
 };

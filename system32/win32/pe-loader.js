@@ -106,6 +106,9 @@ function load(fileBuffer) {
                 const functionName = readCString(rvaToFileOffset(lo) + 2); // pula o hint
                 const apiId = resolveImport(dllName, functionName);
                 if (apiId < 0) throw new Error('API nao suportada: ' + dllName + '!' + functionName);
+                if (apiId >= os.getWin32ThunkCount())
+                    throw new Error('apiId ' + apiId + ' alem da tabela de trampolins (' +
+                                    os.getWin32ThunkCount() + ') — aumente MAX_WIN32 no asm');
                 const thunkAddress = thunkTableBase + apiId * STUB_SIZE;
                 const iatAddress = imageBase + iatRva + slot * 8;
                 os.writePhysical32(iatAddress, thunkAddress >>> 0);

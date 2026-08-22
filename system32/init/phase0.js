@@ -15,6 +15,7 @@ const Registry = require('ntos/cm/registry');
 const Pfn = require('ntos/mm/pfn');
 const SharedUserData = require('ntos/mm/shared-user-data');
 const Smp = require('ntos/ke/smp');
+const Clock = require('ntos/ke/clock');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -37,6 +38,7 @@ function seedService(name, driverFile, start) {
 
 function init() {
     os.debugPrint('[boot] fase 0: nanokernel + objetos + registry');
+    Clock.init();               // relogio TSC de alta resolucao (calibra c/ PIT)
     Interrupts.init();
     Pfn.init();                 // memory manager: alocador de frames fisicos
     SharedUserData.init();      // pagina KUSER_SHARED_DATA mapeada (drivers WDK)

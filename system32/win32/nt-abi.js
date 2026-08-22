@@ -93,6 +93,18 @@ module.exports = {
     UNICODE_STRING: { LENGTH: 0, MAXIMUM_LENGTH: 2, BUFFER: 8, SIZE: 0x10 },
     // KDPC (nossa ABI simplificada; o KDPC real tem filas internas do NT)
     KDPC: { ROUTINE: 0, CONTEXT: 8, QUEUED: 16, SIZE: 24 },
+    // KTIMER (wdm.h x64): DISPATCHER_HEADER(0x18) + DueTime + lista + Dpc
+    KTIMER: {
+        TYPE: 0,                 // TimerNotificationObject=8 / Sync=9
+        SIGNAL_STATE: 4,         // dispatcher header SignalState (i32)
+        DUE_TIME: 0x18,
+        TIMER_LIST_ENTRY: 0x20,
+        DPC: 0x30,
+        PERIOD: 0x38,
+        SIZE: 0x40,
+        TIMER_NOTIFICATION: 8,
+        TIMER_SYNCHRONIZATION: 9,
+    },
     // IO_WORKITEM (nossa ABI simplificada)
     IO_WORKITEM: { DEVICE_OBJECT: 0, ROUTINE: 8, CONTEXT: 16, QUEUED: 24, SIZE: 32 },
     // KEY_VALUE_PARTIAL_INFORMATION (wdm.h)

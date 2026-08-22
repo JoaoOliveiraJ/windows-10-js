@@ -7,16 +7,18 @@
 ; (rcx,rdx,r8,r9) para SysV e chama js_win32_dispatch(id, a1..a4) em C, que
 ; despacha para o handler JavaScript (win32.js / ntoskrnl.js).
 ;
-; Convencao de ids: 0-31 = kernel32 (win32.js), 32-63 = ntoskrnl (exports do
-; kernel para drivers .sys).
+; Convencao de ids: 0-31 = kernel32 (win32.js), >=32 = ntoskrnl (exports do
+; kernel para drivers .sys). MAX_WIN32 precisa cobrir 32 + n. de exports do
+; ntoskrnl (a tabela cresce a cada grupo novo; o build valida no PE loader).
 ; ---------------------------------------------------------------------------
 [bits 64]
 
 extern js_win32_dispatch
 global win32_stubs
+global win32_stub_max
 global exec_msabi
 
-%define MAX_WIN32 96
+%define MAX_WIN32 192
 
 align 16
 win32_stubs:
@@ -26,6 +28,9 @@ win32_stubs:
     jmp strict near win32_common       ; 5 bytes (E9 rel32 FORCADO: stub = 10 bytes)
 %assign i i+1
 %endrep
+
+align 8
+win32_stub_max: dq MAX_WIN32    ; lido pelo host (os.getWin32ThunkCount)
 
 align 16
 win32_common:

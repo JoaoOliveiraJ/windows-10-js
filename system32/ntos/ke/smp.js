@@ -16,6 +16,7 @@
 // ===========================================================================
 
 const MemoryMap = require('ntos/mm/memory-map');
+const Clock = require('ntos/ke/clock');
 
 const MAILBOX = MemoryMap.SMP_MAILBOX_PHYS;
 const TRAMPOLINE = MemoryMap.AP_TRAMPOLINE_PHYS;
@@ -48,10 +49,7 @@ function writePhys64(address, value) {
     os.writePhysical32(address, value >>> 0);
     os.writePhysical32(address + 4, Math.floor(value / 0x100000000));
 }
-function waitMs(ms) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) { /* espera ocupada proposital (sem timer ainda) */ }
-}
+function waitMs(ms) { Clock.spinMs(ms); }   // TSC de alta resolucao
 
 // ---- LAPIC (xAPIC MMIO via primitivas dedicadas — WHPX precisa decodificar
 // a instrucao de acesso; ver hal/qjs/primitives_irq.c) -----------------------
@@ -183,8 +181,8 @@ function startAp(slotIndex, apicId) {
         broadcastIpi(vector);
     }
 
-    const deadline = Date.now() + 500;
-    while (Date.now() < deadline)
+    const deadline = Clock.nowMs() + 500;
+    while (Clock.nowMs() < deadline)
         if (os.readPhysical32(MAILBOX + MB_ACK)) return true;
     return false;
 }
@@ -236,8 +234,8 @@ function init() {
 function slotRecord(slot) { return MAILBOX + MB_SLOTS + slot * SLOT_SIZE; }
 
 function waitJobFree(slot, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline)
+    const deadline = Clock.nowMs() + timeoutMs;
+    while (Clock.nowMs() < deadline)
         if (os.readPhysical32(slotRecord(slot) + SLOT_JOB_DONE)) return true;
     return false;
 }
@@ -259,8 +257,8 @@ function startJob(slot, functionPointer, arg1, arg2, arg3, arg4) {
 // espera o fim do job e devolve o resultado (u64 como numero)
 function waitJob(slot, timeoutMs) {
     const record = slotRecord(slot);
-    const deadline = Date.now() + (timeoutMs || 30000);
-    while (Date.now() < deadline)
+    const deadline = Clock.nowMs() + (timeoutMs || 30000);
+    while (Clock.nowMs() < deadline)
         if (os.readPhysical32(record + SLOT_JOB_DONE))
             return readPhys64(record + SLOT_JOB_RES);
     throw new Error('timeout esperando job do AP slot ' + slot);

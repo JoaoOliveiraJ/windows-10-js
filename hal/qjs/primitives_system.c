@@ -8,6 +8,7 @@
 
 /* trampolins Win32 (hal/win32/win32thunk.asm) */
 extern const uint8_t win32_stubs[];
+extern const uint64_t win32_stub_max;
 
 /* bundle embutido */
 extern const jsbundle_file_t jsbundle_files[];
@@ -133,6 +134,14 @@ static JSValue prim_getWin32ThunkTable(JSContext *ctx, JSValueConst this_val,
     return JS_NewFloat64(ctx, (double)(uintptr_t)win32_stubs);
 }
 
+/* ---- os.getWin32ThunkCount(): n. de stubs (valida ids no PE loader) ---- */
+
+static JSValue prim_getWin32ThunkCount(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewFloat64(ctx, (double)win32_stub_max);
+}
+
 /* ---- os.getGuestArenaBase(): base da arena do heap de convidado ---- */
 
 static JSValue prim_getGuestArenaBase(JSContext *ctx, JSValueConst this_val,
@@ -159,6 +168,7 @@ const JSCFunctionListEntry jsos_system_funcs[] = {
     JS_CFUNC_DEF("execMachineCode", 1, prim_execMachineCode),
     JS_CFUNC_DEF("execMsAbi", 5, prim_execMsAbi),
     JS_CFUNC_DEF("getWin32ThunkTable", 0, prim_getWin32ThunkTable),
+    JS_CFUNC_DEF("getWin32ThunkCount", 0, prim_getWin32ThunkCount),
     JS_CFUNC_DEF("getGuestArenaBase", 0, prim_getGuestArenaBase),
     JS_CFUNC_DEF("halt", 0, prim_halt),
 };

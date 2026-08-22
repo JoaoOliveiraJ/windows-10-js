@@ -255,6 +255,11 @@ function run() {
     assert(threadsRead.result === 'threads-ok',
            'DPC + work item + thread rodaram -> "' + threadsRead.result + '"');
 
+    // grupo 13: KTIMER — timers reais com DPC, periodico e cancelamento
+    Ntoskrnl.loadDriver('/ktimer.sys');
+    assert(ObjectManager.lookup('\\Device\\KTimer'), 'ktimer device criado');
+    checkNativeDriver('\\Device\\KTimer', 'ktimer-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

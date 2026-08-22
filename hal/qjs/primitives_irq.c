@@ -105,6 +105,16 @@ static JSValue prim_lapicWrite(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* ---- os.rdtsc(): Time Stamp Counter (relogio de alta resolucao) ---- */
+
+static JSValue prim_rdtsc(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv) {
+    uint32_t lo, hi;
+    (void)this_val; (void)argc; (void)argv;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return JS_NewFloat64(ctx, (double)lo + (double)hi * 4294967296.0);
+}
+
 const JSCFunctionListEntry jsos_irq_funcs[] = {
     JS_CFUNC_DEF("loadIdt", 2, prim_loadIdt),
     JS_CFUNC_DEF("getIrqStubTable", 0, prim_getIrqStubTable),
@@ -113,5 +123,6 @@ const JSCFunctionListEntry jsos_irq_funcs[] = {
     JS_CFUNC_DEF("cpuid", 1, prim_cpuid),
     JS_CFUNC_DEF("lapicRead", 1, prim_lapicRead),
     JS_CFUNC_DEF("lapicWrite", 2, prim_lapicWrite),
+    JS_CFUNC_DEF("rdtsc", 0, prim_rdtsc),
 };
-const int jsos_irq_funcs_count = 7;
+const int jsos_irq_funcs_count = 8;
