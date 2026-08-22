@@ -80,6 +80,8 @@ function init() {
     seedService('power',     'power.sys',     1);
     // VGA PCI (1234:1111 bochs/std): PnP casa o driver com o PDO pelo id
     seedService('pcidemo',   'pcidemo.sys',   1, 'PCI\\VEN_1234&DEV_1111');
+    // Start=3 (demand): carregado sob demanda via ZwLoadDriver (loader.sys)
+    seedService('ondemand',  'lifecycle.sys', 3);
 }
 
 module.exports = { init };

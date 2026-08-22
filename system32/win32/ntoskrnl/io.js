@@ -51,8 +51,11 @@ function createDevice(driverObjectPointer, extensionSize, deviceName, deviceType
     GuestMemory.writeGuest32(driverObjectPointer + NtAbi.DRIVER_OBJECT.DEVICE_OBJECT,
                              devicePage >>> 0);
 
-    // registra no namespace ligado ao driver atual
-    const driverNode = Lifecycle.getCurrentDriverNode();
+    // registra no namespace ligado ao driver DONO do objeto (o NT liga o
+    // device ao DRIVER_OBJECT do argumento — suporta carga aninhada de
+    // drivers, ex: ZwLoadDriver dentro de um DriverEntry)
+    const driverNode = Lifecycle.nodeByDriverObjectPointer(driverObjectPointer) ||
+                       Lifecycle.getCurrentDriverNode();
     if (driverNode) {
         const deviceNode = ObjectManager.createObject('\\Device', shortName, 'Device',
                                                       { driver: driverNode });
@@ -196,6 +199,7 @@ module.exports = {
         'IoCreateFile',                      // 14 args (abertura completa por nome)
         'IoGetRelatedDeviceObject',          // (fileObjectPtr) -> topo da pilha
         'IoGetDeviceProperty',               // (dev, prop, bufLen, outBuf, outLen)
+        'IoGetStackLimits',                  // (outLowPtr, outHighPtr) pilha real
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -432,6 +436,13 @@ module.exports = {
                 GuestMemory.writeGuest16(outBufferPointer + i * 2,
                                          id.charCodeAt(i));
             GuestMemory.writeGuest32(outLengthPointer, needed);
+            return 0;
+        },
+        // IoGetStackLimits(outLowPtr, outHighPtr): os limites REAIS da pilha
+        // do kernel (0x200000-0x300000, ver memory-map/stage2)
+        (outLowPointer, outHighPointer) => {
+            GuestMemory.writeGuest64(outLowPointer, 0x200000);
+            GuestMemory.writeGuest64(outHighPointer, 0x300000);
             return 0;
         },
     ],

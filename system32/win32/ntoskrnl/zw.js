@@ -10,6 +10,8 @@ const GuestStrings = require('win32/guest-strings');
 const Registry = require('ntos/cm/registry');
 const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
+const Lifecycle = require('win32/ntoskrnl/lifecycle');
+const Process = require('ntos/ps/process');
 
 const STATUS_NOT_FOUND = 0xC0000009;
 const STATUS_BUFFER_TOO_SMALL = 0xC0000023;
@@ -229,6 +231,9 @@ module.exports = {
         'ZwOpenFile',
         'ZwQueryInformationFile',
         'ZwSetInformationFile',
+        'ZwLoadDriver',
+        'ZwUnloadDriver',
+        'ZwQuerySystemInformation',
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -402,6 +407,74 @@ module.exports = {
                 entry.fs.remove(entry.fsPath);
             }
             writeIoStatus(ioStatusPointer, 0, 0);
+            return 0;
+        },
+        // ZwLoadDriver(registryPathUniPtr): le o servico no Registry
+        // (DriverFile) e carrega o .sys — o caminho real do Service Control
+        (registryPathPointer) => {
+            const registryPath = GuestStrings.readUnicodeString(registryPathPointer);
+            const serviceName = registryPath.split('\\').pop();
+            const entry = Registry.readValueByPath(
+                '\\Registry\\Machine\\System\\Services\\' + serviceName,
+                'DriverFile');
+            if (!entry) return STATUS_OBJECT_NAME_NOT_FOUND | 0;
+            let driverFile = '';
+            for (const b of entry.data) { if (!b) break; driverFile += String.fromCharCode(b); }
+            try {
+                Lifecycle.loadDriver('/' + driverFile);
+            } catch (loadError) {
+                os.debugPrint('[zw] ZwLoadDriver falhou: ' + loadError.message);
+                return 0xC0000034 | 0;
+            }
+            return 0;
+        },
+        // ZwUnloadDriver(registryPathUniPtr): descarrega o driver do servico
+        (registryPathPointer) => {
+            const registryPath = GuestStrings.readUnicodeString(registryPathPointer);
+            const serviceName = registryPath.split('\\').pop();
+            const entry = Registry.readValueByPath(
+                '\\Registry\\Machine\\System\\Services\\' + serviceName,
+                'DriverFile');
+            if (!entry) return STATUS_OBJECT_NAME_NOT_FOUND | 0;
+            let driverFile = '';
+            for (const b of entry.data) { if (!b) break; driverFile += String.fromCharCode(b); }
+            const driverName = driverFile.replace(/\.sys$/i, '');
+            return Lifecycle.unloadDriver(driverName)
+                ? 0 : 0xC0000034 | 0;
+        },
+        // ZwQuerySystemInformation(5=SystemProcessInformation, out, len, outLen)
+        // Enumera a cadeia PsActiveProcessHead no formato real do NT.
+        (infoClass, outBufferPointer, bufferLength, outLengthPointer) => {
+            if ((infoClass >>> 0) !== 5) return 0xC000000D | 0;   // SystemProcessInformation
+            const processes = Process.listActiveProcesses();
+            const ENTRY_SIZE = 0x70;   // ate SessionId, layout documentado
+            let cursor = outBufferPointer;
+            let written = 0;
+            for (let i = 0; i < processes.length; i++) {
+                const processInfo = processes[i];
+                const nameBytes = processInfo.name.length * 2;
+                const stride = ENTRY_SIZE + nameBytes + 2;   // nome vai no fim
+                if (cursor + stride > outBufferPointer + bufferLength) break;
+                const isLast = i === processes.length - 1;
+                GuestMemory.writeGuest32(cursor + 0x00,
+                                         isLast ? 0 : stride);          // NextEntryOffset
+                GuestMemory.writeGuest32(cursor + 0x04, 1);              // NumberOfThreads
+                // ImageName: UNICODE_STRING { Length @0x38, Max @0x3A, Buffer @0x40 }
+                GuestMemory.writeGuest16(cursor + 0x38, nameBytes);
+                GuestMemory.writeGuest16(cursor + 0x3A, nameBytes + 2);
+                GuestMemory.writeGuest64(cursor + 0x40,
+                                         cursor + ENTRY_SIZE);           // Buffer
+                GuestMemory.writeGuest64(cursor + 0x50,
+                                         processInfo.pid);               // UniqueProcessId
+                GuestMemory.writeGuest64(cursor + 0x58, 0);              // InheritedFrom
+                GuestMemory.writeGuest32(cursor + 0x64, 0);              // SessionId
+                for (let c = 0; c < processInfo.name.length; c++)
+                    GuestMemory.writeGuest16(cursor + ENTRY_SIZE + c * 2,
+                                             processInfo.name.charCodeAt(c));
+                cursor += stride;
+                written = cursor - outBufferPointer;
+            }
+            GuestMemory.writeGuest32(outLengthPointer, written);
             return 0;
         },
     ],

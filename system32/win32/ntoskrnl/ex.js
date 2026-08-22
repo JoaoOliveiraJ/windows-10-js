@@ -7,6 +7,7 @@ const FastMutex = require('ntos/ke/fast-mutex');
 const Resource = require('ntos/ex/resource');
 const Lookaside = require('ntos/ex/lookaside');
 const WorkItems = require('ntos/io/work-items');
+const Irql = require('ntos/ke/irql');
 
 module.exports = {
     names: [
@@ -42,6 +43,8 @@ module.exports = {
         'ExGetPreviousMode',
         'ExInitializeWorkItem',           // (itemPtr, routinePtr, contextPtr)
         'ExQueueWorkItem',                // (itemPtr, queueType)
+        'ExAcquireSpinLock',              // (lockPtr, outOldIrqlPtr) legado
+        'ExReleaseSpinLock',              // (lockPtr, oldIrql)
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -130,6 +133,26 @@ module.exports = {
         // ExQueueWorkItem(itemPtr, queueType)
         (itemPointer, queueType) => {
             WorkItems.queueExWorkItem(itemPointer, queueType);
+            return 0;
+        },
+        // ExAcquireSpinLock(lockPtr, outOldIrqlPtr): a API legada do NT —
+        // sobe a DISPATCH_LEVEL e adquire com test-and-set
+        (spinLockPointer, outOldIrqlPointer) => {
+            const oldIrql = Irql.getIrql();
+            Irql.raiseIrql(Irql.DISPATCH_LEVEL);
+            for (;;) {
+                if (GuestMemory.readGuest32(spinLockPointer) === 0) {
+                    GuestMemory.writeGuest32(spinLockPointer, 1);
+                    break;
+                }
+            }
+            GuestMemory.writeGuest32(outOldIrqlPointer, oldIrql);
+            return 0;
+        },
+        // ExReleaseSpinLock(lockPtr, oldIrql)
+        (spinLockPointer, oldIrql) => {
+            GuestMemory.writeGuest32(spinLockPointer, 0);
+            Irql.lowerIrql(oldIrql >>> 0);
             return 0;
         },
     ],

@@ -5,6 +5,8 @@
 
 const KernelThreads = require('ntos/ps/kernel-threads');
 const Process = require('ntos/ps/process');
+const GuestMemory = require('win32/guest-memory');
+const NtAbi = require('win32/nt-abi');
 
 module.exports = {
     names: [
@@ -14,6 +16,8 @@ module.exports = {
         'PsGetCurrentProcessId',    // () -> KTHREAD.Cid.UniqueProcess (idem)
         'PsSetCreateProcessNotifyRoutine',      // (callbackPtr, remove)
         'PsRemoveCreateProcessNotifyRoutine',   // (callbackPtr)
+        'PsLookupProcessByProcessId',           // (pid, outProcessPtr)
+        'PsGetProcessId',                       // (processPtr) -> pid @0x440 (RE)
     ],
     handlers: [
         // PsCreateSystemThread(outHandlePtr, access, objAttrs, procHandle,
@@ -42,5 +46,19 @@ module.exports = {
         (callbackPointer) =>
             Process.unregisterProcessNotify(callbackPointer)
                 ? 0 : 0xC000007A | 0,
+        // PsLookupProcessByProcessId(pid, outProcessPtr): anda a cadeia
+        // PsActiveProcessHead procurando o pid (como o NT)
+        (processId, outputPointer) => {
+            const found = Process.listActiveProcesses()
+                .find(p => p.pid === (processId >>> 0) ||
+                           p.pid === processId);
+            if (!found) return 0xC0000074 | 0;   // STATUS_NOT_FOUND... invalid pid
+            GuestMemory.writeGuest64(outputPointer, found.address);
+            return 0;
+        },
+        // PsGetProcessId(processPtr) -> EPROCESS.UniqueProcessId (@0x440, RE)
+        (processPointer) =>
+            GuestMemory.readGuest64(processPointer +
+                                    NtAbi.EPROCESS.UNIQUE_PROCESS_ID),
     ],
 };

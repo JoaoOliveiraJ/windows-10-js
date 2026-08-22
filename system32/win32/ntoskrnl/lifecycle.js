@@ -9,6 +9,7 @@ const NtAbi = require('win32/nt-abi');
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
 const ObjectManager = require('ntos/ob/object-manager');
+const IoManager = require('ntos/io/io-manager');
 const PeLoader = require('win32/pe-loader');
 
 const DRV = NtAbi.DRIVER_OBJECT;
@@ -16,11 +17,20 @@ const DRV = NtAbi.DRIVER_OBJECT;
 // driver sendo inicializado no momento (entre beginDriver/endDriver)
 let currentDriverNode = null;
 
+// mapa driverObjectPointer -> no do driver (o NT liga o device ao
+// DRIVER_OBJECT passado no IoCreateDevice — NAO a um estado ambiente; isso
+// suporta carga aninhada de drivers, ex: ZwLoadDriver dentro de DriverEntry)
+const nodeByDriverObject = new Map();
+
 function getCurrentDriverNode() { return currentDriverNode; }
 
 // contexto de driver ativo fora do DriverEntry (PnP AddDevice e' chamado
 // pelo gerenciador PnP, nao durante o load)
 function setCurrentDriverNode(node) { currentDriverNode = node; }
+
+function nodeByDriverObjectPointer(driverObjectPointer) {
+    return nodeByDriverObject.get(driverObjectPointer >>> 0) || null;
+}
 
 function beginDriver(driverName, imageBase, imageSize, entryPoint) {
     const driverObjectPointer = GuestMemory.guestAllocBytes(DRV.STRUCT_SIZE + 0x400);
@@ -60,6 +70,7 @@ function beginDriver(driverName, imageBase, imageSize, entryPoint) {
         exports: {},
         devices: [],
     });
+    nodeByDriverObject.set(driverObjectPointer >>> 0, currentDriverNode);
     return driverObjectPointer;
 }
 
@@ -110,16 +121,17 @@ function unloadDriver(driverName) {
     const driverObjectPointer = node.data.driverObjectPointer;
     const unloadRoutine = GuestMemory.readGuest64(driverObjectPointer + DRV.DRIVER_UNLOAD);
     // PnP primeiro: REMOVE_DEVICE para cada device (como o NT no unload)
-    const IoManager = require('ntos/io/io-manager');
     for (const device of [...node.data.devices])
         IoManager.pnpRemoveDevice(device);
     if (unloadRoutine) os.execMsAbi(unloadRoutine, driverObjectPointer, 0);
     for (const device of [...node.data.devices])
         ObjectManager.unlink('\\Device\\' + device.name);
     ObjectManager.unlink('\\Driver\\' + driverName);
+    nodeByDriverObject.delete(driverObjectPointer >>> 0);
     GuestMemory.guestFreeBytes(driverObjectPointer);
     return true;
 }
 
 module.exports = { beginDriver, endDriver, loadDriver, unloadDriver,
-                   getCurrentDriverNode, setCurrentDriverNode, getDriverExport };
+                   getCurrentDriverNode, setCurrentDriverNode, getDriverExport,
+                   nodeByDriverObjectPointer };

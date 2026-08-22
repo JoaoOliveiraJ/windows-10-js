@@ -425,6 +425,14 @@ function run() {
     Scheduler.tick();   // termina -> reap -> notifica a saida
     checkNativeDriver('\\Device\\Notify', 'notify-ok');
 
+    // grupo 30: ZwLoadDriver/ZwUnloadDriver, PsLookupProcessByProcessId,
+    // ExSpinLock legado, IoGetStackLimits, ZwQuerySystemInformation
+    const probePid = Scheduler.spawn('query-probe', function* () { for (;;) yield; });
+    Ntoskrnl.loadDriver('/loader.sys');   // ZwQuerySystemInformation ve o probe
+    assert(ObjectManager.lookup('\\Device\\Loader'), 'loader device criado');
+    checkNativeDriver('\\Device\\Loader', 'loader-ok');
+    Scheduler.kill(probePid);
+
     os.debugPrint('SELFTEST_OK');
 }
 
