@@ -179,6 +179,7 @@ module.exports = {
         'ZwEnumerateKey',
         'ZwEnumerateValueKey',
         'ZwDeleteKey',
+        'ZwQueryFullAttributesFile',
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -287,5 +288,22 @@ module.exports = {
         // ZwDeleteKey(handle): remove a chave da hive de verdade
         (keyHandle) => Registry.deleteKey(keyHandle >>> 0)
             ? 0 : STATUS_INVALID_HANDLE | 0,
+        // ZwQueryFullAttributesFile(objAttrs, out FILE_BASIC_INFORMATION):
+        // +0x00..0x18 tempos (100ns desde 1601), +0x20 FileAttributes
+        (objectAttributesPointer, outBufferPointer) => {
+            const objectName = keyPathFromObjectAttributes(objectAttributesPointer);
+            const target = resolveMountedFile(objectName);
+            if (!target || !target.fs.exists(target.fsPath))
+                return STATUS_OBJECT_NAME_NOT_FOUND | 0;
+            const ntTimeNow = (Date.now() + 11644473600000) * 10000;
+            for (let field = 0; field < 4; field++) {
+                GuestMemory.writeGuest32(outBufferPointer + field * 8,
+                                         ntTimeNow % 0x100000000);
+                GuestMemory.writeGuest32(outBufferPointer + field * 8 + 4,
+                                         Math.floor(ntTimeNow / 0x100000000));
+            }
+            GuestMemory.writeGuest32(outBufferPointer + 0x20, 0x80);  // NORMAL
+            return 0;
+        },
     ],
 };

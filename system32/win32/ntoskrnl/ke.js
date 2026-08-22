@@ -73,6 +73,9 @@ module.exports = {
         'KeQueryPerformanceCounter',       // (outFreqPtr) -> contador TSC
         'KeStallExecutionProcessor',       // (microseconds) — espera ocupada real
         'KeBugCheckEx',                    // (code, p1..p4) — para o sistema
+        'KeSetImportanceDpc',              // (dpcPtr, importance)
+        'KeSetTargetProcessorDpc',         // (dpcPtr, processorNumber)
+        'KeFlushQueuedDpcs',               // drena a fila de DPCs agora
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -244,5 +247,19 @@ module.exports = {
             os.halt();
             return 0;   // nao alcancado
         },
+        // KeSetImportanceDpc(dpcPtr, importance): grava na KDPC real
+        (dpcPointer, importance) => {
+            GuestMemory.writeGuest32(dpcPointer + NtAbi.KDPC.IMPORTANCE,
+                                     importance >>> 0);
+            return 0;
+        },
+        // KeSetTargetProcessorDpc(dpcPtr, number): KDPC.Number (campo real)
+        (dpcPointer, processorNumber) => {
+            GuestMemory.writeGuest32(dpcPointer + 0x08, processorNumber >>> 0);
+            GuestMemory.writeGuest32(dpcPointer + 0x0C, 0);
+            return 0;
+        },
+        // KeFlushQueuedDpcs(): drena a fila de DPCs na hora (como o NT)
+        () => { KeDpc.runQueue(); return 1; },
     ],
 };

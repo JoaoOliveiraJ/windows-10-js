@@ -20,6 +20,38 @@ function freeString(pointer) {
     return 0;
 }
 
+// escreve `text` numa UNICODE_STRING de destino (upcase/downcase etc.):
+// aloca o buffer se pedido/sem buffer; respeita MaximumLength
+function writeConvertedString(destPointer, text, allocate) {
+    let buffer = GuestMemory.readGuest32(destPointer + US.BUFFER);
+    if (allocate || !buffer) {
+        buffer = GuestMemory.guestAllocBytes(text.length * 2 + 2);
+        GuestMemory.writeGuest32(destPointer + US.BUFFER, buffer);
+        GuestMemory.writeGuest32(destPointer + 12, 0);
+        GuestMemory.writeGuest16(destPointer + 2, text.length * 2 + 2);
+    } else if (GuestMemory.readGuest16(destPointer + 2) < text.length * 2 + 2) {
+        return 0x80000005 | 0;   // STATUS_BUFFER_OVERFLOW
+    }
+    for (let i = 0; i < text.length; i++)
+        GuestMemory.writeGuest16(buffer + i * 2, text.charCodeAt(i));
+    GuestMemory.writeGuest16(buffer + text.length * 2, 0);
+    GuestMemory.writeGuest16(destPointer, text.length * 2);
+    return 0;
+}
+
+// concatena texto no buffer do dest (respeita MaximumLength)
+function appendToUnicodeString(destPointer, newText) {
+    const maxChars = GuestMemory.readGuest16(destPointer + 2) / 2;
+    if (newText.length + 1 > maxChars)
+        return 0x80000005 | 0;   // STATUS_BUFFER_OVERFLOW
+    const buffer = GuestMemory.readGuest32(destPointer + US.BUFFER);
+    for (let i = 0; i < newText.length; i++)
+        GuestMemory.writeGuest16(buffer + i * 2, newText.charCodeAt(i));
+    GuestMemory.writeGuest16(buffer + newText.length * 2, 0);
+    GuestMemory.writeGuest16(destPointer, newText.length * 2);
+    return 0;
+}
+
 module.exports = {
     names: [
         'RtlInitUnicodeString',
@@ -46,6 +78,11 @@ module.exports = {
         'RtlCopyMemory',
         'RtlMoveMemory',
         'RtlCompareMemory',
+        'RtlUpcaseUnicodeString',
+        'RtlDowncaseUnicodeString',
+        'RtlPrefixUnicodeString',
+        'RtlAppendUnicodeStringToString',
+        'RtlAppendUnicodeToString',
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
@@ -254,6 +291,38 @@ module.exports = {
                    GuestMemory.readGuest8(pointerB + equal))
                 equal++;
             return equal;
+        },
+        // RtlUpcaseUnicodeString(dest, src, allocate): dest = src em maiusculas
+        (destPointer, srcPointer, allocate) => {
+            const text = GuestStrings.readUnicodeString(srcPointer).toUpperCase();
+            return writeConvertedString(destPointer, text, allocate);
+        },
+        // RtlDowncaseUnicodeString(dest, src, allocate): minusculas
+        (destPointer, srcPointer, allocate) => {
+            const text = GuestStrings.readUnicodeString(srcPointer).toLowerCase();
+            return writeConvertedString(destPointer, text, allocate);
+        },
+        // RtlPrefixUnicodeString(prefix, text, caseInsensitive) -> 1 se prefixo
+        (prefixPointer, textPointer, caseInsensitive) => {
+            let prefix = GuestStrings.readUnicodeString(prefixPointer);
+            let text = GuestStrings.readUnicodeString(textPointer);
+            if (caseInsensitive) {
+                prefix = prefix.toLowerCase();
+                text = text.toLowerCase();
+            }
+            return text.startsWith(prefix) ? 1 : 0;
+        },
+        // RtlAppendUnicodeStringToString(dest, src): concatena no buffer do dest
+        (destPointer, srcPointer) => {
+            const currentText = GuestStrings.readUnicodeString(destPointer);
+            const suffixText = GuestStrings.readUnicodeString(srcPointer);
+            return appendToUnicodeString(destPointer, currentText + suffixText);
+        },
+        // RtlAppendUnicodeToString(dest, wideStrPtr): concatena C-string wide
+        (destPointer, wideStringPointer) => {
+            const currentText = GuestStrings.readUnicodeString(destPointer);
+            const suffixText = GuestStrings.readGuestWideString(wideStringPointer);
+            return appendToUnicodeString(destPointer, currentText + suffixText);
         },
     ],
 };

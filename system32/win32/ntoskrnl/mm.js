@@ -4,6 +4,7 @@
 // ===========================================================================
 
 const GuestMemory = require('win32/guest-memory');
+const Paging = require('ntos/mm/paging');
 
 // mapeamentos IoSpace ativos: va -> { physicalAddress, size } (aqui VA == PA:
 // nossa paginacao e' identity-mapped, entao o "mapeamento" e' real por
@@ -16,6 +17,7 @@ module.exports = {
         'MmFreeNonCachedMemory',
         'MmMapIoSpace',
         'MmUnmapIoSpace',
+        'MmGetPhysicalAddress',
     ],
     handlers: [
         // MmAllocateNonCachedMemory(size) -> memoria fisica zerada
@@ -37,5 +39,7 @@ module.exports = {
             ioSpaceMappings.delete(virtualAddress >>> 0);
             return 0;
         },
+        // MmGetPhysicalAddress(va) -> PA: anda as tabelas de pagina DE VERDADE
+        (virtualAddress) => Paging.translate(virtualAddress),
     ],
 };

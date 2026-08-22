@@ -372,6 +372,12 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\AtaDrv'), 'atadrv device criado');
     checkNativeDriver('\\Device\\AtaDrv', 'atadrv-ok');
 
+    // grupo 24: Rtl upcase/prefix/append, MmGetPhysicalAddress, controles de
+    // DPC (importance/target/flush) e ZwQueryFullAttributesFile
+    Ntoskrnl.loadDriver('/compat.sys');
+    assert(ObjectManager.lookup('\\Device\\Compat'), 'compat device criado');
+    checkNativeDriver('\\Device\\Compat', 'compat-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 
