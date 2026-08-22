@@ -3,6 +3,9 @@
 // UNICA fonte de verdade para o layout fisico/virtual (evita colisoes).
 //
 //   0x000000-0x07FFF     tabelas do boot, IDT, memoria compartilhada IRQ
+//   0x009000-0x009FFF    trampolim de AP (SMP, SIPI vetor 0x09)
+//   0x00A000-0x00AFFF    mailbox SMP (handshake + fila de jobs por CPU)
+//   0x060000-0x06FFFF    pilhas dos APs (4KB por CPU, ate 16 CPUs)
 //   0x100000-0x1FFFFF    imagem do kernel (<= 1MB)
 //   0x200000-0x2FFFFF    pilha do kernel (topo 0x300000)
 //   0x400000-0x4FFFFF    area de .exe PE (1MB)
@@ -28,4 +31,12 @@ module.exports = {
     PML4_PHYS:            0x70000,
     PDPT_PHYS:            0x71000,
     PD_PHYS:              0x72000,      // PD0..PD3 seguem (4GB identity)
+
+    // SMP (ver ntos/ke/smp.js e boot/aptrampoline.asm)
+    AP_TRAMPOLINE_PHYS:   0x9000,       // SIPI vetor 0x09
+    SMP_MAILBOX_PHYS:     0xA000,
+    AP_STACK_BASE:        0x60000,      // pilha de 4KB por CPU
+    AP_STACK_SIZE:        0x1000,
+    MAX_CPUS:             16,
+    LAPIC_PHYS:           0xFEE00000,   // LAPIC MMIO (xAPIC)
 };

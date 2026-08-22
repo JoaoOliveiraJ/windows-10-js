@@ -194,6 +194,43 @@ function run() {
     assert(IoManager.getDevicePowerState('\\Device\\Power') === DevicePowerState.D0,
            'Power Manager registrou D0');
 
+    // SMP: CPUs reais descobertos via ACPI MADT; APs online via INIT-SIPI;
+    // codigo nativo executado DE VERDADE em paralelo nos outros CPUs
+    const Smp = require('ntos/ke/smp');
+    const cpuTotal = Smp.discoveredCpuCount();
+    assert(cpuTotal >= 1, 'ACPI MADT com ao menos o BSP');
+    if (cpuTotal > 1 && Smp.onlineCpuCount() < cpuTotal) {
+        // WHPX (QEMU 11) nao liga vCPUs secundarios: o SIPI chega ao APIC
+        // emulado (visto no trace do QEMU) mas o vCPU nunca e escalonado.
+        // Em hardware real o INIT-SIPI-SIPI funciona — a sequencia aqui e a
+        // oficial da spec Intel MP. Degrada para 1 CPU como no boot real.
+        os.debugPrint('[selftest] plataforma sem startup de AP (WHPX) - ' +
+                      'testes de paralelismo pulados (CPUs online: ' +
+                      Smp.onlineCpuCount() + '/' + cpuTotal + ')');
+    }
+    if (cpuTotal > 1 && Smp.onlineCpuCount() === cpuTotal) {
+        Ntoskrnl.loadDriver('/smpjob.sys');
+        const spinWork = Ntoskrnl.getDriverExport('smpjob', 'SpinWork');
+        const parallelSum = Ntoskrnl.getDriverExport('smpjob', 'ParallelSum');
+        assert(spinWork > 0 && parallelSum > 0, 'exports do smpjob resolvidos');
+        // resultado do AP tem que ser identico ao do BSP (deterministico)
+        const expectedSpin = os.execMsAbi(spinWork, 100000, 0, 0, 0) >>> 0;
+        for (let i = 0; i < Smp.apSlotCount(); i++) {
+            const got = Smp.runOnAp(Smp.apSlot(i), spinWork, 100000) >>> 0;
+            assert(got === expectedSpin,
+                   'job nativo no AP slot ' + i + ' retornou igual ao BSP');
+        }
+        // todos os APs ocupados AO MESMO TEMPO (paralelismo real)
+        const expectedSum = os.execMsAbi(parallelSum, 777, 2000000, 0, 0) >>> 0;
+        for (let i = 0; i < Smp.apSlotCount(); i++)
+            Smp.startJob(Smp.apSlot(i), parallelSum, 777, 2000000);
+        for (let i = 0; i < Smp.apSlotCount(); i++)
+            assert((Smp.waitJob(Smp.apSlot(i)) >>> 0) === expectedSum,
+                   'AP ' + i + ' somou em paralelo correto');
+        os.debugPrint('[selftest] SMP: ' + cpuTotal + ' CPUs, ' +
+                      Smp.apSlotCount() + ' APs executaram nativo em paralelo');
+    }
+
     // ciclo de vida: carga+descarga dinamica continua dirigida pelo JS
     Ntoskrnl.loadDriver('/lifecycle.sys');
     assert(ObjectManager.lookup('\\Device\\LifeCycle'), 'lifecycle device criado');

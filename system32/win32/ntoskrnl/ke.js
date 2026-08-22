@@ -7,6 +7,7 @@
 
 const Irql = require('ntos/ke/irql');
 const KeDpc = require('ntos/ke/dpc');
+const Smp = require('ntos/ke/smp');
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
 
@@ -47,6 +48,10 @@ module.exports = {
         'KeInsertQueueDpc',
         'KeRemoveQueueDpc',
         'KeReleaseSpinLock',               // (lock, newIrql) nome WDK do Kf*
+        'KeGetCurrentProcessorNumber',     // () -> CPU corrente (drivers rodam no BSP)
+        'KeQueryActiveProcessorCount',     // () -> CPUs online (SMP real)
+        'KeQueryActiveProcessors',         // () -> bitmask KAFFINITY dos online
+        'KeGetProcessorNumberFromIndex',   // (index, out PROCESSOR_NUMBER)
     ],
     handlers: [
         // DbgPrint(formatPtr): texto do convidado -> serial
@@ -110,5 +115,26 @@ module.exports = {
         (dpcPointer) => KeDpc.removeQueueDpc(dpcPointer),
         // KeReleaseSpinLock(lock, newIrql): mesmo handler do KfReleaseSpinLock
         (pointer, newIrql) => { releaseSpinLock(pointer, newIrql); return 0; },
+        // KeGetCurrentProcessorNumber(): todo codigo de driver roda no BSP (0)
+        () => 0,
+        // KeQueryActiveProcessorCount(): CPUs online de verdade (SMP)
+        () => Smp.onlineCpuCount(),
+        // KeQueryActiveProcessors(): bitmask (bit N = CPU N online)
+        () => {
+            let mask = 1;   // BSP sempre online
+            for (let i = 0; i < Smp.apSlotCount(); i++) mask |= (1 << (i + 1));
+            return mask;
+        },
+        // KeGetProcessorNumberFromIndex(index, out {Group u16, Number u8})
+        (processorIndex, outputPointer) => {
+            if (processorIndex >= Smp.onlineCpuCount())
+                return 0xC000000D | 0;      // STATUS_INVALID_PARAMETER
+            if (outputPointer) {
+                GuestMemory.writeGuest16(outputPointer, 0);             // Group
+                GuestMemory.writeGuest8(outputPointer + 2, processorIndex);
+                GuestMemory.writeGuest8(outputPointer + 3, 0);
+            }
+            return 0;
+        },
     ],
 };

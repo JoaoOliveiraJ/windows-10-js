@@ -212,14 +212,41 @@ O jsOS **carrega e executa drivers no formato `.sys` do Windows** (PE nativo,
   dispatch do driver com `os.execMsAbi`).
 
 Drivers demo em `apps/drivers/*.c` (cada um vira `*.sys` no build, compilado
-com `zig cc` no Windows — a import library `ntoskrnl.lib` é gerada da própria
-tabela JS via `zig dlltool`, fonte única de verdade). Todos cobertos pelo
-autoteste: echo.sys, irplife.sys, rtlstr.sys, ketime.sys, mmmem.sys,
-expool.sys. No shell: `loaddriver /echo.sys`.
+com **MSVC + WDK real** — `cl.exe`/`link.exe` contra o `ntddk.h` oficial; a
+import library `ntoskrnl.lib` sai da própria tabela JS, fonte única de
+verdade). Todos cobertos pelo autoteste: echo.sys, irplife.sys, rtlstr.sys,
+ketime.sys, mmmem.sys, expool.sys, interlock.sys, irql.sys, rtlansi.sys,
+registry.sys, power.sys, lifecycle.sys, threads.sys, smpjob.sys. No shell:
+`loaddriver /echo.sys`.
 
 **Limites honestos**: nossa ABI de structs é um subconjunto documentado estilo
 NT — drivers WDM de terceiros (com centenas de exports e semântica exata)
 continuam fora de alcance; o caminho é expandir a tabela export a export.
+
+## SMP (multiprocessamento)
+
+`system32/ntos/ke/smp.js` implementa SMP de verdade, 100% em JS:
+
+- **Descoberta de CPUs** via ACPI real: RSDP (scan 0xE0000+checksum), RSDT e
+  MADT — cada LAPIC habilitado (type 0 e x2APIC type 9) é um CPU.
+- **Startup de APs** com a sequência oficial da spec Intel MP: INIT (assert/
+  deassert) + 2×SIPI apontando para o trampolim `boot/aptrampoline.asm` em
+  `0x9000` (modo real→protegido→long mode, mesmo CR3 do BSP). O LAPIC é
+  programado por MMIO (`0xFEE00000`) via `os.lapicRead/Write` — acessos com
+  `mov` simples porque o emulador de MMIO do WHPX precisa decodificar a
+  instrução (e falha em formas como `movsxd`).
+- **Mailbox SMP** em `0xA000`: handshake de boot, contagem de CPUs online e
+  **fila de jobs por CPU** — o JS posta um ponteiro de função nativa + 4
+  argumentos no slot do AP e o AP executa de verdade em outro núcleo
+  (`Smp.startJob/waitJob/runOnAp`), provado no autoteste com o driver
+  `smpjob.sys` (export `SpinWork`, resolvido pelo diretório de exports PE).
+
+**Limite honesto de plataforma**: o QEMU 11 + WHPX não liga vCPUs
+secundários — o SIPI chega ao APIC emulado (visível no trace do QEMU) mas o
+vCPU nunca é escalonado (limitação do backend, não do sistema; em hardware
+real a sequência funciona). Nesse caso o boot degrada para 1 CPU e o
+autoteste pula os testes de paralelismo (log `[selftest] ... WHPX`). O QEMU
+já roda com `-smp 4`: se o WHPX for corrigido, tudo liga sozinho.
 
 ## E drivers .sys do Windows?
 

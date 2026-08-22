@@ -20,6 +20,7 @@ function tryBoot(accelArgs) {
         const args = [
             '-accel', 'whpx',
             '-m', '4096',
+            '-smp', '4',
             '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,
             '-drive', `format=raw,if=ide,index=1,media=disk,file=${path.join(root, 'build', 'ntfs.img')}`,
             '-display', 'none',

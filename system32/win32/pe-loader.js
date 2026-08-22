@@ -48,6 +48,7 @@ function load(fileBuffer) {
                            readUint32(optionalHeader + 28) * 0x100000000;
     const sizeOfImage    = readUint32(optionalHeader + 56);
     const sizeOfHeaders  = readUint32(optionalHeader + 60);
+    const exportTableRva = readUint32(optionalHeader + 112);     // DataDirectory[0]
     const importTableRva = readUint32(optionalHeader + 112 + 8); // DataDirectory[1]
     const sectionTable   = optionalHeader + optionalHeaderSize;
 
@@ -117,8 +118,26 @@ function load(fileBuffer) {
     }
 
     const entryPoint = imageBase + entryPointRva;
+
+    // diretorio de exports (DataDirectory[0]): nome -> endereco absoluto
+    const exports = {};
+    if (exportTableRva) {
+        const dir = rvaToFileOffset(exportTableRva);
+        const numberOfNames = readUint32(dir + 24);
+        const addressOfFunctions = readUint32(dir + 28);
+        const addressOfNames = readUint32(dir + 32);
+        const addressOfOrdinals = readUint32(dir + 36);
+        for (let i = 0; i < numberOfNames; i++) {
+            const nameRva = readUint32(rvaToFileOffset(addressOfNames) + i * 4);
+            const ordinal = readUint16(rvaToFileOffset(addressOfOrdinals) + i * 2);
+            const functionRva = readUint32(rvaToFileOffset(addressOfFunctions) +
+                                           ordinal * 4);
+            exports[readCString(rvaToFileOffset(nameRva))] = imageBase + functionRva;
+        }
+    }
+
     os.debugPrint('[pe] entry point = 0x' + entryPoint.toString(16));
-    return { entryPoint, imageBase, sizeOfImage };
+    return { entryPoint, imageBase, sizeOfImage, exports };
 }
 
 module.exports = { load, registerResolver };

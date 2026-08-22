@@ -43,12 +43,20 @@ function beginDriver(driverName, imageBase, imageSize, entryPoint) {
         name: driverName,
         native: true,
         driverObjectPointer,
+        exports: {},
         devices: [],
     });
     return driverObjectPointer;
 }
 
 function endDriver() { currentDriverNode = null; }
+
+// endereco absoluto de um export do driver (PE export directory, parse real)
+function getDriverExport(driverName, exportName) {
+    const node = ObjectManager.lookup('\\Driver\\' + driverName);
+    if (!node || !node.data.exports) return 0;
+    return node.data.exports[exportName] || 0;
+}
 
 // carrega um .sys do VFS: PE loader + DriverEntry nativo
 function loadDriver(filePath) {
@@ -60,6 +68,7 @@ function loadDriver(filePath) {
     const driverObjectPointer = beginDriver(driverName, imageInfo.imageBase,
                                             imageInfo.sizeOfImage,
                                             imageInfo.entryPoint);
+    currentDriverNode.data.exports = imageInfo.exports;
     const status = os.execMsAbi(imageInfo.entryPoint, driverObjectPointer, 0);
     endDriver();
     if (status !== 0) throw new Error('DriverEntry de ' + driverName +
@@ -83,4 +92,4 @@ function unloadDriver(driverName) {
 }
 
 module.exports = { beginDriver, endDriver, loadDriver, unloadDriver,
-                   getCurrentDriverNode };
+                   getCurrentDriverNode, getDriverExport };

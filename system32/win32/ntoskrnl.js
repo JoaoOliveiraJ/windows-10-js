@@ -45,6 +45,7 @@ module.exports = {
     lookup,
     loadDriver: Lifecycle.loadDriver,
     unloadDriver: Lifecycle.unloadDriver,
+    getDriverExport: Lifecycle.getDriverExport,
     runKernelTasks,
     exportNames,
 };

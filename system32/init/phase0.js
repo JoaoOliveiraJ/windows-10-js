@@ -14,6 +14,7 @@ const MemoryFileSystem = require('ntos/fs/memory-file-system');
 const Registry = require('ntos/cm/registry');
 const Pfn = require('ntos/mm/pfn');
 const SharedUserData = require('ntos/mm/shared-user-data');
+const Smp = require('ntos/ke/smp');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -39,6 +40,7 @@ function init() {
     Interrupts.init();
     Pfn.init();                 // memory manager: alocador de frames fisicos
     SharedUserData.init();      // pagina KUSER_SHARED_DATA mapeada (drivers WDK)
+    Smp.init();                 // SMP: ACPI MADT + INIT-SIPI dos APs (LAPIC)
 
     ObjectManager.createDirectory('\\Device');
     ObjectManager.createDirectory('\\Driver');

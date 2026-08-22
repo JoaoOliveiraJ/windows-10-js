@@ -79,6 +79,8 @@ function genBundle() {
     if (existsSync(helloExe)) entries.push({ name: 'apps/hello.exe', file: helloExe });
     /* drivers .sys compilados pelo build (ver secao 0b) */
     for (const driver of builtDrivers) entries.push(driver);
+    /* trampolim de AP (SMP) montado pelo build (ver secao 0c) */
+    for (const artifact of bootArtifacts) entries.push(artifact);
     let out = '/* GERADO pelo build (tools/build.mjs) - nao editar */\n';
     out += '#include <stdint.h>\n';
     out += 'typedef struct { const char *name; const char *data; uint32_t size; } jsbundle_file_t;\n\n';
@@ -170,6 +172,13 @@ driverSources.forEach((driverSource, index) => {
     }
     builtDrivers.push({ name: 'apps/' + driverName + '.sys', file: sysFile });
 });
+
+/* 0c. trampolim de AP (SMP): modo real -> 64 bits; o JS copia p/ 0x9000 no
+ * boot e dispara INIT-SIPI-SIPI pelo LAPIC (ver system32/ntos/ke/smp.js) */
+const bootArtifacts = [];
+const apTrampolineBin = path.join(buildDir, 'aptrampoline.bin');
+run(nasm, ['-f', 'bin', path.join(root, 'boot', 'aptrampoline.asm'), '-o', apTrampolineBin]);
+bootArtifacts.push({ name: 'boot/aptrampoline.bin', file: apTrampolineBin });
 
 const nFiles = genBundle();
 

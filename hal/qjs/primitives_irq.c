@@ -72,11 +72,46 @@ static JSValue prim_cpuid(JSContext *ctx, JSValueConst this_val,
     return arr;
 }
 
+/* ---- os.lapicRead/lapicWrite: LAPIC MMIO (0xFEE00000+reg) ----
+ * Com kernel-irqchip=off o QEMU emula o LAPIC em userland e o emulador do
+ * WHPX precisa DECODIFICAR a instrucao que acessa o GPA. O decoder falha em
+ * formas exoticas (ex: movsxd com [rax]) — por isso aqui vai asm explicito
+ * com o mov mais simples possivel (8B/89 /r), que o WHPX decodifica. */
+
+#define JSOS_LAPIC_PHYS 0xFEE00000u
+
+static JSValue prim_lapicRead(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    uint32_t reg, value;
+    (void)this_val; (void)argc;
+    JS_ToUint32(ctx, &reg, argv[0]);
+    __asm__ volatile("movl %1, %0"
+                     : "=r"(value)
+                     : "m"(*(volatile uint32_t *)(uintptr_t)(JSOS_LAPIC_PHYS + reg))
+                     : "memory");
+    return JS_NewUint32(ctx, value);
+}
+
+static JSValue prim_lapicWrite(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+    uint32_t reg, value;
+    (void)this_val; (void)argc;
+    JS_ToUint32(ctx, &reg, argv[0]);
+    JS_ToUint32(ctx, &value, argv[1]);
+    __asm__ volatile("movl %1, %0"
+                     : "=m"(*(volatile uint32_t *)(uintptr_t)(JSOS_LAPIC_PHYS + reg))
+                     : "r"(value)
+                     : "memory");
+    return JS_UNDEFINED;
+}
+
 const JSCFunctionListEntry jsos_irq_funcs[] = {
     JS_CFUNC_DEF("loadIdt", 2, prim_loadIdt),
     JS_CFUNC_DEF("getIrqStubTable", 0, prim_getIrqStubTable),
     JS_CFUNC_DEF("readMsr", 1, prim_readMsr),
     JS_CFUNC_DEF("writeMsr", 2, prim_writeMsr),
     JS_CFUNC_DEF("cpuid", 1, prim_cpuid),
+    JS_CFUNC_DEF("lapicRead", 1, prim_lapicRead),
+    JS_CFUNC_DEF("lapicWrite", 2, prim_lapicWrite),
 };
-const int jsos_irq_funcs_count = 5;
+const int jsos_irq_funcs_count = 7;
