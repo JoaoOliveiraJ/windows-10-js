@@ -363,6 +363,12 @@ function run() {
            'AddDevice do pcidemo criou o FDO via PnP');
     checkNativeDriver('\\Device\\PciDemo', 'pcidemo-ok');
 
+    // grupo 23: driver de storage NATIVO lendo o disco IDE de verdade via
+    // HAL (READ_PORT_*/WRITE_PORT_*) — ATA PIO igual ao nosso driver JS
+    Ntoskrnl.loadDriver('/atadrv.sys');
+    assert(ObjectManager.lookup('\\Device\\AtaDrv'), 'atadrv device criado');
+    checkNativeDriver('\\Device\\AtaDrv', 'atadrv-ok');
+
     os.debugPrint('SELFTEST_OK');
 }
 

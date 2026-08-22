@@ -32,6 +32,7 @@ void  host_heap_info(size_t *total, size_t *used);
 void     host_outb(uint16_t port, uint8_t val);
 uint8_t  host_inb(uint16_t port);
 uint16_t host_inw(uint16_t port);
+void     host_outw(uint16_t port, uint16_t val);
 void     host_outl(uint16_t port, uint32_t val);
 uint32_t host_inl(uint16_t port);
 

@@ -27,6 +27,10 @@ uint16_t host_inw(uint16_t port) {
     return v;
 }
 
+void host_outw(uint16_t port, uint16_t val) {
+    __asm__ volatile("outw %0, %1" :: "a"(val), "Nd"(port));
+}
+
 void host_outl(uint16_t port, uint32_t val) {
     __asm__ volatile("outl %0, %1" :: "a"(val), "Nd"(port));
 }
