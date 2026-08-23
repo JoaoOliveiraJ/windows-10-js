@@ -92,4 +92,23 @@ function startBootDrivers() {
     return loaded;
 }
 
-module.exports = { startBootDrivers };
+// carrega um servico especifico sob demanda (Start=2/3): o caminho que o
+// Service Control usa quando alguem pede um driver fora do boot — idempotente
+function loadServiceDriver(serviceName) {
+    if (ObjectManager.lookup('\\Driver\\' + serviceName)) return true;
+    const file = readString(serviceName, 'DriverFile');
+    if (!file) {
+        os.debugPrint('[services] ' + serviceName + ': servico sem DriverFile');
+        return false;
+    }
+    os.debugPrint('[services] ' + serviceName + ' -> ' + file + ' (demanda)');
+    try {
+        Ntoskrnl.loadDriver('/' + file);
+    } catch (e) {
+        os.debugPrint('[services] FALHOU ' + serviceName + ': ' + e.message);
+        return false;
+    }
+    return !!ObjectManager.lookup('\\Driver\\' + serviceName);
+}
+
+module.exports = { startBootDrivers, loadServiceDriver };

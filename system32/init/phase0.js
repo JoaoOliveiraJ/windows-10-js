@@ -30,6 +30,31 @@ function dwordBytes(value) {
     return [value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF];
 }
 
+// REG_MULTI_SZ (tipo 7): cadeias UTF-16LE separadas por NUL, terminadas em
+// NUL duplo — o formato real do Windows para valores como UpperFilters
+function multiSzBytes(strings) {
+    const bytes = [];
+    for (const text of strings) {
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            bytes.push(code & 0xFF, (code >> 8) & 0xFF);
+        }
+        bytes.push(0, 0);
+    }
+    bytes.push(0, 0);
+    return bytes;
+}
+
+// classe de dispositivo (HKLM\SYSTEM\CurrentControlSet\Control\Class\<guid>
+// no NT; aqui sem control sets, direto em System\Control\Class) — o PnP le
+// UpperFilters dela para anexar os filtros de classe sobre o FDO funcional
+function seedDeviceClass(classGuid, upperFilters) {
+    const handle = Registry.openOrCreate(
+        '\\Registry\\Machine\\System\\Control\\Class\\' + classGuid);
+    Registry.setValue(handle, 'UpperFilters', 7, multiSzBytes(upperFilters));
+    Registry.closeHandle(handle);
+}
+
 // servicos = drivers carregados na fase 1 (Start: 0=boot, 1=system, 2=auto)
 // hardwareId (opcional): id PnP estilo INF — o gerenciador PnP casa com o
 // hardware enumerado e chama o AddDevice do driver com o PDO
@@ -86,6 +111,9 @@ function init() {
     // i8042prt: servico demand (o selftest carrega) + a subchave Parameters
     // como no Windows real (o driver le os defaults de la no DriverEntry)
     seedService('i8042prt',  'i8042prt.sys',  3);
+    // kbdclass/mouclass: filtros de classe (upper filters), carregados quando
+    // o PnP casa um devnode da classe Keyboard/Mouse — como o NT faz
+    seedService('kbdclass',  'kbdclass.sys',  3);
     seedServiceParameters('i8042prt', [
         ['KeyboardDataQueueSize', 4, dwordBytes(0x64)],
         ['MouseDataQueueSize',    4, dwordBytes(0x64)],
@@ -95,6 +123,10 @@ function init() {
         ['OverrideKeyboardType',  4, dwordBytes(0)],
         ['CrashOnCtrlScroll',     4, dwordBytes(0)],
     ]);
+    // classes de dispositivo com seus upper filters (o INF da classe teclado/
+    // mouse do Windows registra kbdclass/mouclass exatamente assim)
+    seedDeviceClass('{4D36E96B-E325-11CE-BFC1-08002BE10318}', ['kbdclass']);
+    seedDeviceClass('{4D36E96F-E325-11CE-BFC1-08002BE10318}', ['mouclass']);
     // arvore de descricao de hardware (o que o HAL povoa: 8042 no barramento
     // ISA) — lida pelo IoQueryDeviceDescription dos drivers legados
     HwDescription.seedHardwareDescription();

@@ -321,7 +321,7 @@ module.exports = {
         DESCRIPTORS: 0x08,
     },
     CM_PARTIAL_RESOURCE_DESCRIPTOR: {
-        TYPE: 0x00,              // u8: 1=DeviceSpecific 2=Port 3=Interrupt 4=Memory
+        TYPE: 0x00,              // u8 (CM_RESOURCE_TYPE: 1=Port 2=Interrupt 3=Memory)
         SHARE_DISPOSITION: 0x01, // u8: 0=Exclusive 1=Shared 2=DeviceExclusive
         FLAGS: 0x02,             // u16 (interrupt: 1=LevelSensitive,0=Latched...)
         PORT_START: 0x04,        // PHYSICAL_ADDRESS u64 (Memory/Port)
@@ -330,8 +330,8 @@ module.exports = {
         INTERRUPT_VECTOR: 0x08,  // u32
         INTERRUPT_AFFINITY: 0x0C,// KAFFINITY (u64, alinhamento 4 no x64 real)
         SIZE: 0x14,              // stride real medido no binario
-        TYPE_PORT: 2,
-        TYPE_INTERRUPT: 3,
-        TYPE_MEMORY: 4,
+        TYPE_PORT: 1,            // CmResourceTypePort (medido no parser do i8042prt)
+        TYPE_INTERRUPT: 2,       // CmResourceTypeInterrupt
+        TYPE_MEMORY: 3,          // CmResourceTypeMemory
     },
 };

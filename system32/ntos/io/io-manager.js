@@ -257,12 +257,20 @@ function buildDeviceIoControlRequest(ioctlCode, devicePointer, inputBuffer,
     const isInternal = (internal & 0xFF) !== 0;
     const stackCount = GuestMemory.readGuest8(devicePointer +
                                               NtAbi.DEVICE_OBJECT.STACK_SIZE) || 1;
-    const systemBufferSize = Math.max(inputLength >>> 0, outputLength >>> 0, 1);
-    const systemBuffer = GuestMemory.guestAllocBytes(systemBufferSize);
-    if (inputBuffer)
-        for (let i = 0; i < (inputLength >>> 0); i++)
-            GuestMemory.writeGuest8(systemBuffer + i,
-                                    GuestMemory.readGuest8(inputBuffer + i));
+    // o metodo de buffering vem do proprio IOCTL (bits 0-1): METHOD_NEITHER=3
+    // passa o input CRU via Type3InputBuffer (ex: IOCTL_INTERNAL_KEYBOARD_
+    // CONNECT — o i8042prt le o CONNECT_DATA direto do ponteiro, sem copia)
+    const transferMethod = (ioctlCode >>> 0) & 3;
+    const methodNeither = transferMethod === 3;
+    let systemBuffer = 0;
+    if (!methodNeither) {
+        const systemBufferSize = Math.max(inputLength >>> 0, outputLength >>> 0, 1);
+        systemBuffer = GuestMemory.guestAllocBytes(systemBufferSize);
+        if (inputBuffer)
+            for (let i = 0; i < (inputLength >>> 0); i++)
+                GuestMemory.writeGuest8(systemBuffer + i,
+                                        GuestMemory.readGuest8(inputBuffer + i));
+    }
     const irpAddress = GuestMemory.guestAllocBytes(IrpBuilder.sizeFor(stackCount));
     IrpBuilder.build(irpAddress, {
         major: isInternal ? IRP_MJ.INTERNAL_DEVICE_CONTROL : IRP_MJ.DEVICE_CONTROL,
@@ -271,13 +279,15 @@ function buildDeviceIoControlRequest(ioctlCode, devicePointer, inputBuffer,
         bufferLength: outputLength >>> 0,
         deviceObject: devicePointer,
         stackCount,
-        ioctl: { code: ioctlCode >>> 0, inputLength: inputLength >>> 0 },
+        ioctl: { code: ioctlCode >>> 0, inputLength: inputLength >>> 0,
+                 type3Buffer: methodNeither ? inputBuffer : 0 },
         userEvent: eventPointer,
         userIosb: ioStatusPointer,
         userBuffer: outputBuffer,
     });
-    GuestMemory.writeGuest32(irpAddress + IRP.FLAGS,
-                             IRP_BUFFERED_IO | IRP_DEALLOCATE_BUFFER);
+    if (!methodNeither)
+        GuestMemory.writeGuest32(irpAddress + IRP.FLAGS,
+                                 IRP_BUFFERED_IO | IRP_DEALLOCATE_BUFFER);
     return irpAddress;
 }
 

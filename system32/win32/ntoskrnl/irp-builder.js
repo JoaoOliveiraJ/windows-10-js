@@ -63,6 +63,10 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject,
         GuestMemory.writeGuest32(stack + SL.IOCTL_CODE, ioctl.code);
         GuestMemory.writeGuest32(stack + SL.IOCTL_IN_LENGTH, ioctl.inputLength || 0);
         GuestMemory.writeGuest32(stack + SL.IOCTL_OUT_LENGTH, bufferLength);
+        // METHOD_NEITHER: o input vai CRU em Type3InputBuffer (sem SystemBuffer)
+        if (ioctl.type3Buffer)
+            GuestMemory.writeGuest64(stack + SL.IOCTL_TYPE3_BUFFER,
+                                     ioctl.type3Buffer);
     }
     // IRP_MJ_PNP/START_DEVICE: Parameters.StartDevice.AllocatedResources[*]
     if (resources) {

@@ -11,15 +11,25 @@
 
 const IoManager = require('ntos/io/io-manager');
 const ObjectManager = require('ntos/ob/object-manager');
+const Registry = require('ntos/cm/registry');
+const Services = require('ntos/cm/services');
 const Lifecycle = require('win32/ntoskrnl/lifecycle');
 const WorkItems = require('ntos/io/work-items');
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
+const NtAbi = require('win32/nt-abi');
 
 // PDO -> driver funcional (o "INF estatico" do jsOS; hardwareId -> servico)
 const FUNCTION_DRIVER_BY_ID = {
     PNP0303: 'i8042prt',   // controlador de teclado PS/2 -> port driver MS
     PNP0F13: 'i8042prt',   // mouse PS/2 -> mesmo port driver
+};
+
+// hardwareId -> GUID da classe de dispositivo (o que o INF do dispositivo
+// declara em ClassGuid; o NT usa para achar os UpperFilters da classe)
+const CLASS_GUID_BY_ID = {
+    PNP0303: '{4D36E96B-E325-11CE-BFC1-08002BE10318}',   // Keyboard
+    PNP0F13: '{4D36E96F-E325-11CE-BFC1-08002BE10318}',   // Mouse
 };
 
 // chama o AddDevice do driver funcional sobre o PDO e devolve o NOVO device
@@ -48,6 +58,54 @@ function attachFunctionDriver(pdoNode, driverName) {
                       fdoNode.name + ' sobre PDO \\Device\\' + pdoNode.name);
     }
     return fdoNode;
+}
+
+// le o UpperFilters (REG_MULTI_SZ UTF-16LE) da classe de dispositivo — o que
+// o PnP manager do NT faz ao montar a pilha de um devnode
+function readClassUpperFilters(classGuid) {
+    const entry = Registry.readValueByPath(
+        '\\Registry\\Machine\\System\\Control\\Class\\' + classGuid,
+        'UpperFilters');
+    if (!entry) return [];
+    const names = [];
+    let current = '';
+    for (let i = 0; i + 1 < entry.data.length; i += 2) {
+        const code = entry.data[i] | (entry.data[i + 1] << 8);
+        if (code === 0) {
+            if (current) { names.push(current); current = ''; }
+            else break;   // NUL duplo: fim da multi_sz
+        } else current += String.fromCharCode(code);
+    }
+    return names;
+}
+
+// anexa os filtros de classe (UpperFilters) sobre o FDO funcional — cada um
+// recebe o AddDevice com o PDO e se anexa ao topo corrente da pilha nativa
+// (kbdclass anexa sobre o i8042prt e CONECTA a porta ali mesmo, no AddDevice)
+function attachUpperFilters(pdoNode, fdoNode, hardwareIds) {
+    const classGuid = hardwareIds.map(id => CLASS_GUID_BY_ID[id]).find(g => g);
+    if (!classGuid) return;
+    for (const filterName of readClassUpperFilters(classGuid)) {
+        if (!Services.loadServiceDriver(filterName)) {
+            os.debugPrint('[pnp] filtro ' + filterName + ' indisponivel');
+            continue;
+        }
+        const status = Lifecycle.callAddDevice(
+            filterName, pdoNode.data.nativeDevicePointer);
+        os.debugPrint('[pnp] AddDevice do filtro ' + filterName + ' -> 0x' +
+                      (status >>> 0).toString(16));
+    }
+    // resolve o TOPO da pilha nativa (cadeia AttachedDevice a partir do FDO):
+    // os IRPs PnP vao para o topo, como o PnP manager faz com
+    // IoGetAttachedDeviceReference — filtros veem o IRP antes do FDO
+    let topPointer = fdoNode.data.nativeDevicePointer;
+    for (let guard = 0; guard < 16; guard++) {
+        const above = GuestMemory.readGuest64(
+            topPointer + NtAbi.DEVICE_OBJECT.ATTACHED_DEVICE);
+        if (!above) break;
+        topPointer = above;
+    }
+    fdoNode.data.stackTopPointer = topPointer;
 }
 
 // manda um minor PNP qualquer para a pilha (helper interno)
@@ -145,6 +203,9 @@ function enumeratePdoStack(pdoNode) {
     }
     const fdoNode = attachFunctionDriver(pdoNode, driverName);
     if (!fdoNode) return null;
+    // pilha completa do devnode: filtros de classe ANTES do START (o NT monta
+    // a pilha inteira e so entao manda START_DEVICE ao topo)
+    attachUpperFilters(pdoNode, fdoNode, ids);
     if (startDeviceStack(fdoNode) !== 0) return fdoNode;
     // o hardware init de drivers de porta roda em WORK ITEM deferido
     // (i8042prt: IoAllocateWorkItem + IoQueueWorkItem no START) — drena a
@@ -159,6 +220,7 @@ function enumeratePdoStack(pdoNode) {
     return fdoNode;
 }
 
-module.exports = { attachFunctionDriver, startDeviceStack, queryBusRelations,
-                   registerChildPdo, enumeratePdoStack, queryHardwareIds,
-                   FUNCTION_DRIVER_BY_ID };
+module.exports = { attachFunctionDriver, attachUpperFilters, startDeviceStack,
+                   queryBusRelations, registerChildPdo, enumeratePdoStack,
+                   queryHardwareIds, readClassUpperFilters,
+                   FUNCTION_DRIVER_BY_ID, CLASS_GUID_BY_ID };
