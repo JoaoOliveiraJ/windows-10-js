@@ -23,6 +23,7 @@ const Irql = require('ntos/ke/irql');
 const InterruptObject = require('ntos/ke/interrupt-object');
 const Controller = require('ntos/io/controller');
 const StartIo = require('ntos/io/start-io');
+const HwDescription = require('ntos/cm/hw-description');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -739,11 +740,15 @@ module.exports = {
             invalidatedDevices.add(devicePointer >>> 0);
             return 0;
         },
-        // IoQueryDeviceDescription(busType, busNumber, ...): busca legada em
-        // \Registry\Machine\Hardware\Description — nao povoada no nosso boot
-        // (sem EISA/MCA; o 8042 chega por PnP) -> OBJECT_NAME_NOT_FOUND real
-        (_busTypePointer, _busNumberPointer, _controllerTypePointer,
-         _controllerNumberPointer, _peripheralTypePointer,
-         _peripheralNumberPointer) => 0xC0000034 | 0,
+        // IoQueryDeviceDescription(busType, busNumber, ...): a consulta REAL
+        // na arvore \Hardware\Description (ntos/cm/hw-description.js), com o
+        // callout do driver invocado (11 args da ABI do ntddk.h)
+        (busTypePointer, busNumberPointer, controllerTypePointer,
+         controllerNumberPointer, peripheralTypePointer,
+         peripheralNumberPointer, calloutRoutine, contextPointer) =>
+            HwDescription.queryDeviceDescription(
+                busTypePointer, busNumberPointer, controllerTypePointer,
+                controllerNumberPointer, peripheralTypePointer,
+                peripheralNumberPointer, calloutRoutine, contextPointer),
     ],
 };

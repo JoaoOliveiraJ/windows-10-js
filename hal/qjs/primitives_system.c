@@ -110,6 +110,8 @@ static JSValue prim_execMachineCode(JSContext *ctx, JSValueConst this_val,
 
 extern uint64_t exec_msabi(uint64_t addr, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4);
+extern uint64_t exec_msabi_n(uint64_t addr, uint64_t argArray,
+                             uint64_t count);
 
 /* traco de execucao nativa p/ debug de drivers: quando o byte 0x81518 != 0
  * (ligado pelo JS), cada chamada imprime o endereco do alvo se estiver na
@@ -140,6 +142,21 @@ static JSValue prim_execMsAbi(JSContext *ctx, JSValueConst this_val,
     exec_trace((uint64_t)addr);
     r = exec_msabi((uint64_t)addr, (uint64_t)a1, (uint64_t)a2,
                    (uint64_t)a3, (uint64_t)a4);
+    return JS_NewFloat64(ctx, (double)r);
+}
+
+/* ---- os.execMsAbiN(addr, argArrayPtr, count): MS ABI com N argumentos
+ * (args 5+ passam pela pilha do convidado, como a ABI exige) ---- */
+static JSValue prim_execMsAbiN(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+    double addr, arrayPtr, count;
+    uint64_t r;
+    (void)this_val;
+    JS_ToFloat64(ctx, &addr, argv[0]);
+    JS_ToFloat64(ctx, &arrayPtr, argv[1]);
+    JS_ToFloat64(ctx, &count, argv[2]);
+    exec_trace((uint64_t)addr);
+    r = exec_msabi_n((uint64_t)addr, (uint64_t)arrayPtr, (uint64_t)count);
     return JS_NewFloat64(ctx, (double)r);
 }
 
@@ -184,9 +201,10 @@ const JSCFunctionListEntry jsos_system_funcs[] = {
     JS_CFUNC_DEF("listBundleFiles", 0, prim_listBundleFiles),
     JS_CFUNC_DEF("execMachineCode", 1, prim_execMachineCode),
     JS_CFUNC_DEF("execMsAbi", 5, prim_execMsAbi),
+    JS_CFUNC_DEF("execMsAbiN", 3, prim_execMsAbiN),
     JS_CFUNC_DEF("getWin32ThunkTable", 0, prim_getWin32ThunkTable),
     JS_CFUNC_DEF("getWin32ThunkCount", 0, prim_getWin32ThunkCount),
     JS_CFUNC_DEF("getGuestArenaBase", 0, prim_getGuestArenaBase),
     JS_CFUNC_DEF("halt", 0, prim_halt),
 };
-const int jsos_system_funcs_count = 11;
+const int jsos_system_funcs_count = 12;

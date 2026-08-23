@@ -12,6 +12,7 @@ require('nano/kernel');
 const ObjectManager = require('ntos/ob/object-manager');
 const MemoryFileSystem = require('ntos/fs/memory-file-system');
 const Registry = require('ntos/cm/registry');
+const HwDescription = require('ntos/cm/hw-description');
 const Pfn = require('ntos/mm/pfn');
 const SharedUserData = require('ntos/mm/shared-user-data');
 const Smp = require('ntos/ke/smp');
@@ -94,6 +95,9 @@ function init() {
         ['OverrideKeyboardType',  4, dwordBytes(0)],
         ['CrashOnCtrlScroll',     4, dwordBytes(0)],
     ]);
+    // arvore de descricao de hardware (o que o HAL povoa: 8042 no barramento
+    // ISA) — lida pelo IoQueryDeviceDescription dos drivers legados
+    HwDescription.seedHardwareDescription();
 }
 
 // Parameters de um servico (subchave Parameters, como o INF criaria)

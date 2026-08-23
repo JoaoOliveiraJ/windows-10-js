@@ -104,3 +104,49 @@ exec_msabi:
     mov rsp, rbp
     pop rbp
     ret
+
+; ---------------------------------------------------------------------------
+; exec_msabi_n(addr, argArray, count): chama codigo nativo MS ABI com N args.
+;   SysV entrada: rdi = endereco, rsi = ponteiro p/ u64 argArray[count],
+;                 rdx = count
+;   MS ABI: argArray[0..3] -> rcx,rdx,r8,r9; argArray[4..] -> pilha
+;   ([rsp+0x20] = arg5, [rsp+0x28] = arg6, ... shadow space de 32B antes).
+;   Retorno em rax e repassado ao chamador SysV.
+; ---------------------------------------------------------------------------
+align 16
+global exec_msabi_n
+exec_msabi_n:
+    push rbp
+    mov rbp, rsp
+    mov r11, rsi              ; argArray
+    mov r10, rdx              ; count
+    mov r9, rdi               ; endereco
+    ; espaco de pilha: shadow(32) + max(0, count-4)*8, alinhado a 16
+    mov rax, r10
+    sub rax, 4
+    jle .alloc_shadow
+    lea rax, [rax*8 + 32 + 15]
+    and rax, -16
+    sub rsp, rax
+    ; copia argArray[4..] p/ [rsp+0x20 + i*8]
+    xor ecx, ecx
+.copyloop:
+    lea rdx, [rcx + 4]
+    cmp rdx, r10
+    jge .setup_regs
+    mov rsi, [r11 + rdx*8]
+    mov [rsp + 0x20 + rcx*8], rsi
+    inc ecx
+    jmp .copyloop
+.alloc_shadow:
+    sub rsp, 32
+.setup_regs:
+    mov rax, r9               ; endereco
+    mov rcx, [r11]            ; a1
+    mov rdx, [r11 + 8]        ; a2
+    mov r8,  [r11 + 0x10]     ; a3
+    mov r9,  [r11 + 0x18]     ; a4
+    call rax
+    mov rsp, rbp
+    pop rbp
+    ret
