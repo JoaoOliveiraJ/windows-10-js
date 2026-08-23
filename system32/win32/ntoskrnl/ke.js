@@ -92,6 +92,9 @@ module.exports = {
         'KeAreApcsDisabled',
         'KeRegisterBugCheckCallback',      // (callbackPtr, context, componentPtr, len, statePtr)
         'KeDeregisterBugCheckCallback',
+        'KeAcquireSpinLockAtDpcLevel',     // adquire SEM subir IRQL (ja em DPC)
+        'KeReleaseSpinLockFromDpcLevel',   // libera SEM descer IRQL
+        'PsGetVersion',                    // (outMajor, outMinor, outBuild, suffix)
     ],
     handlers: [
         // DbgPrint(formatPtr, args...): printf real do kernel — formata
@@ -318,6 +321,27 @@ module.exports = {
             if (index < 0) return 0;
             bugCheckCallbacks.splice(index, 1);
             GuestMemory.guestFreeBytes(recordPointer);
+            return 1;
+        },
+        // KeAcquireSpinLockAtDpcLevel(lock): adquire sem mexer no IRQL (o
+        // chamador ja esta a DISPATCH_LEVEL — e' o KefAcquireSpinLockAtDpcLevel)
+        (pointer) => {
+            for (;;) {
+                if (GuestMemory.readGuest32(pointer) === 0) {
+                    GuestMemory.writeGuest32(pointer, 1);
+                    return 0;
+                }
+            }
+        },
+        // KeReleaseSpinLockFromDpcLevel(lock)
+        (pointer) => { GuestMemory.writeGuest32(pointer, 0); return 0; },
+        // PsGetVersion(outMajorPtr, outMinorPtr, outBuildPtr, suffixPtr):
+        // nossa versao NT compativel (10.0.19045, Win10 22H2) — retorna 1
+        (majorPointer, minorPointer, buildPointer, suffixPointer) => {
+            if (majorPointer) GuestMemory.writeGuest32(majorPointer, 10);
+            if (minorPointer) GuestMemory.writeGuest32(minorPointer, 0);
+            if (buildPointer) GuestMemory.writeGuest32(buildPointer, 19045);
+            if (suffixPointer) GuestMemory.writeGuest32(suffixPointer, 0);
             return 1;
         },
     ],

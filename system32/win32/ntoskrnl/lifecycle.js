@@ -32,6 +32,22 @@ function nodeByDriverObjectPointer(driverObjectPointer) {
     return nodeByDriverObject.get(driverObjectPointer >>> 0) || null;
 }
 
+// rotinas de re-inicializacao (IoRegisterDriverReinitialization): rodam
+// depois que todos os drivers de boot inicializaram (semantica do NT)
+const reinitializationRoutines = [];
+
+function registerReinitialization(routinePointer, contextPointer) {
+    reinitializationRoutines.push({ routinePointer, contextPointer });
+}
+
+// chamado pelo Service Control ao fim da carga dos boot drivers
+function runReinitializationRoutines() {
+    while (reinitializationRoutines.length > 0) {
+        const entry = reinitializationRoutines.shift();
+        os.execMsAbi(entry.routinePointer, 0, entry.contextPointer);
+    }
+}
+
 function beginDriver(driverName, imageBase, imageSize, entryPoint) {
     const driverObjectPointer = GuestMemory.guestAllocBytes(DRV.STRUCT_SIZE + 0x400);
     const nameBuffer = GuestMemory.guestAllocBytes(driverName.length * 2 + 2);
@@ -83,7 +99,8 @@ function getDriverExport(driverName, exportName) {
     return node.data.exports[exportName] || 0;
 }
 
-// carrega um .sys do VFS: PE loader + DriverEntry nativo
+// carrega um .sys do VFS: PE loader + DriverEntry nativo com o caminho de
+// registry do servico (como o NT passa \Registry\Machine\System\Services\X)
 function loadDriver(filePath) {
     const MemoryFileSystem = require('ntos/fs/memory-file-system');
     const driverBytes = MemoryFileSystem.readBytes(filePath);
@@ -94,7 +111,18 @@ function loadDriver(filePath) {
                                             imageInfo.sizeOfImage,
                                             imageInfo.entryPoint);
     currentDriverNode.data.exports = imageInfo.exports;
-    const status = os.execMsAbi(imageInfo.entryPoint, driverObjectPointer, 0);
+
+    // UNICODE_STRING com o caminho do servico (o registryPath real)
+    const registryPath = '\\Registry\\Machine\\System\\Services\\' + driverName;
+    const pathBuffer = GuestMemory.guestAllocBytes(registryPath.length * 2 + 2);
+    GuestStrings.writeGuestWideString(pathBuffer, registryPath);
+    const pathStruct = GuestMemory.guestAllocBytes(16);
+    GuestMemory.writeGuest16(pathStruct, registryPath.length * 2);
+    GuestMemory.writeGuest16(pathStruct + 2, registryPath.length * 2 + 2);
+    GuestMemory.writeGuest64(pathStruct + 8, pathBuffer);
+
+    const status = os.execMsAbi(imageInfo.entryPoint, driverObjectPointer,
+                                pathStruct);
     endDriver();
     if (status !== 0) throw new Error('DriverEntry de ' + driverName +
                                       ' retornou ' + status);
@@ -134,4 +162,5 @@ function unloadDriver(driverName) {
 
 module.exports = { beginDriver, endDriver, loadDriver, unloadDriver,
                    getCurrentDriverNode, setCurrentDriverNode, getDriverExport,
-                   nodeByDriverObjectPointer };
+                   nodeByDriverObjectPointer, registerReinitialization,
+                   runReinitializationRoutines };

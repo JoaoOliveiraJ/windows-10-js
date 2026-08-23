@@ -234,6 +234,7 @@ module.exports = {
         'ZwLoadDriver',
         'ZwUnloadDriver',
         'ZwQuerySystemInformation',
+        'ZwPowerInformation',
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -255,11 +256,14 @@ module.exports = {
             return 0;
         },
         // ZwSetValueKey(handle, valueNameUniPtr, titleIndex, type, dataPtr, dataSize)
+        // dataSize e' o 6o arg (PILHA): o chamador so garante 32 bits — >>> 0
         (keyHandle, valueNamePointer, _titleIndex, valueType, dataPointer, dataSize) => {
+            const dataLength = dataSize >>> 0;
+            const dataStart = dataPointer >>> 0;
             const valueName = GuestStrings.readUnicodeString(valueNamePointer);
             const data = [];
-            for (let i = 0; i < dataSize; i++)
-                data.push(GuestMemory.readGuest8(dataPointer + i));
+            for (let i = 0; i < dataLength; i++)
+                data.push(GuestMemory.readGuest8(dataStart + i));
             return Registry.setValue(keyHandle, valueName, valueType, data)
                 ? 0 : STATUS_NOT_FOUND;
         },
@@ -475,6 +479,21 @@ module.exports = {
                 written = cursor - outBufferPointer;
             }
             GuestMemory.writeGuest32(outLengthPointer, written);
+            return 0;
+        },
+        // ZwPowerInformation(level, input, inLen, out, outLen):
+        // level 4 = SystemPowerCapabilities (desktop: sem bateria, AC ligado)
+        (informationLevel, _inputPointer, _inputLength, outBufferPointer,
+         outputLength) => {
+            if ((informationLevel >>> 0) !== 4) return 0xC000000D | 0;
+            if (outputLength < 0x40) return STATUS_BUFFER_TOO_SMALL | 0;
+            // SYSTEM_POWER_CAPABILITIES: presente, sem bateria, AC sempre ok
+            GuestMemory.writeGuest8(outBufferPointer + 0x00, 1);   // PowerButton
+            GuestMemory.writeGuest8(outBufferPointer + 0x01, 1);   // SleepButton
+            GuestMemory.writeGuest8(outBufferPointer + 0x02, 0);   // LidSwitch
+            GuestMemory.writeGuest8(outBufferPointer + 0x03, 1);   // S1 suportado
+            GuestMemory.writeGuest8(outBufferPointer + 0x07, 1);   // AcOnLineWake
+            GuestMemory.writeGuest8(outBufferPointer + 0x0C, 1);   // FastSystemS4?0
             return 0;
         },
     ],

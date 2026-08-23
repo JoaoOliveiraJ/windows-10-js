@@ -17,6 +17,9 @@ const KernelThreads = require('ntos/ps/kernel-threads');
 const Process = require('ntos/ps/process');
 const Zw = require('win32/ntoskrnl/zw');
 const PciBus = require('drivers/bus/pci');
+const Registry = require('ntos/cm/registry');
+const Dispatcher = require('ntos/ke/dispatcher');
+const Irql = require('ntos/ke/irql');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -27,6 +30,22 @@ const driverExtensions = new Map();
 // mapa FDO -> PDO registrado no attach (para IoGetDeviceProperty achar o
 // PDO de hardware de qualquer ponto da pilha)
 const pdoOfAttachedDevice = new Map();
+
+// spinlock global de cancelamento (IoAcquire/ReleaseCancelSpinLock)
+let cancelSpinLockPointer = 0;
+
+// device interfaces: symlink -> { enabled, deviceName, notificationFired }
+const deviceInterfaces = new Map();
+
+// PnP notification registrations (IoRegisterPlugPlayNotification)
+const plugPlayRegistrations = [];
+
+// devices com classes WMI registradas (IoWMIRegistrationControl)
+const wmiRegisteredDevices = new Set();
+
+// IO_REMOVE_LOCK offsets (wdm.h, bloco comum): Removed @0, IoCount @4,
+// WaitEvent (KEVENT) @0x10
+const REMOVE_LOCK = { REMOVED: 0, IO_COUNT: 4, WAIT_EVENT: 0x10 };
 
 // cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver.
 // A DeviceExtension (se pedida) fica logo apos o DEVICE_OBJECT, como o NT faz.
@@ -200,6 +219,21 @@ module.exports = {
         'IoGetRelatedDeviceObject',          // (fileObjectPtr) -> topo da pilha
         'IoGetDeviceProperty',               // (dev, prop, bufLen, outBuf, outLen)
         'IoGetStackLimits',                  // (outLowPtr, outHighPtr) pilha real
+        'IoInitializeRemoveLockEx',
+        'IoAcquireRemoveLockEx',
+        'IoReleaseRemoveLockEx',
+        'IoReleaseRemoveLockAndWaitEx',
+        'IoAllocateErrorLogEntry',
+        'IoWriteErrorLogEntry',
+        'IoAcquireCancelSpinLock',
+        'IoReleaseCancelSpinLock',
+        'IoRegisterDeviceInterface',
+        'IoSetDeviceInterfaceState',
+        'IoRegisterPlugPlayNotification',
+        'IoUnregisterPlugPlayNotification',
+        'IoRegisterDriverReinitialization',
+        'IoOpenDeviceRegistryKey',
+        'IoWMIRegistrationControl',
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -443,6 +477,168 @@ module.exports = {
         (outLowPointer, outHighPointer) => {
             GuestMemory.writeGuest64(outLowPointer, 0x200000);
             GuestMemory.writeGuest64(outHighPointer, 0x300000);
+            return 0;
+        },
+        // IoInitializeRemoveLockEx(lockPtr, allocTag, maxCount, maxIrp, size)
+        (lockPointer, _allocTag, _maxCount, _maxIrp, _structSize) => {
+            GuestMemory.writeGuest8(lockPointer + REMOVE_LOCK.REMOVED, 0);
+            GuestMemory.writeGuest32(lockPointer + REMOVE_LOCK.IO_COUNT, 0);
+            Dispatcher.initializeEvent(lockPointer + REMOVE_LOCK.WAIT_EVENT,
+                                       0, 0);
+            return 0;
+        },
+        // IoAcquireRemoveLockEx(lockPtr, tag, file, line, size) -> NTSTATUS
+        (lockPointer) => {
+            if (GuestMemory.readGuest8(lockPointer + REMOVE_LOCK.REMOVED))
+                return 0xC0000056 | 0;   // STATUS_DELETE_PENDING
+            GuestMemory.writeGuest32(lockPointer + REMOVE_LOCK.IO_COUNT,
+                GuestMemory.readGuest32(lockPointer + REMOVE_LOCK.IO_COUNT) + 1);
+            return 0;
+        },
+        // IoReleaseRemoveLockEx(lockPtr, tag, size)
+        (lockPointer) => {
+            const remaining = GuestMemory.readGuest32(lockPointer +
+                REMOVE_LOCK.IO_COUNT) - 1;
+            GuestMemory.writeGuest32(lockPointer + REMOVE_LOCK.IO_COUNT,
+                                     remaining);
+            if (remaining === 0 &&
+                GuestMemory.readGuest8(lockPointer + REMOVE_LOCK.REMOVED))
+                Dispatcher.setEvent(lockPointer + REMOVE_LOCK.WAIT_EVENT);
+            return 0;
+        },
+        // IoReleaseRemoveLockAndWaitEx(lockPtr, tag, size): marca removido,
+        // solta a referencia do caller e espera as pendentes zerarem
+        (lockPointer) => {
+            GuestMemory.writeGuest8(lockPointer + REMOVE_LOCK.REMOVED, 1);
+            const remaining = GuestMemory.readGuest32(lockPointer +
+                REMOVE_LOCK.IO_COUNT) - 1;
+            GuestMemory.writeGuest32(lockPointer + REMOVE_LOCK.IO_COUNT,
+                                     remaining);
+            if (remaining > 0)
+                Dispatcher.waitForSingleObject(lockPointer +
+                                               REMOVE_LOCK.WAIT_EVENT, 0);
+            return 0;
+        },
+        // IoAllocateErrorLogEntry(objectPtr, entrySize) -> bloco no pool
+        (_objectPointer, entrySize) => GuestMemory.guestAllocBytes(entrySize),
+        // IoWriteErrorLogEntry(entryPtr): grava no log do sistema (serial)
+        (entryPointer) => {
+            const errorCode = GuestMemory.readGuest32(entryPointer + 4);
+            os.debugPrint('[errorlog] codigo=0x' + errorCode.toString(16));
+            GuestMemory.guestFreeBytes(entryPointer);
+            return 0;
+        },
+        // IoAcquireCancelSpinLock(outIrqlPtr): o spinlock global de cancel
+        (outIrqlPointer) => {
+            if (!cancelSpinLockPointer) {
+                cancelSpinLockPointer = GuestMemory.guestAllocBytes(8);
+                GuestMemory.writeGuest32(cancelSpinLockPointer, 0);
+            }
+            const oldIrql = Irql.getIrql();
+            Irql.raiseIrql(Irql.DISPATCH_LEVEL);
+            for (;;) {
+                if (GuestMemory.readGuest32(cancelSpinLockPointer) === 0) {
+                    GuestMemory.writeGuest32(cancelSpinLockPointer, 1);
+                    break;
+                }
+            }
+            GuestMemory.writeGuest32(outIrqlPointer, oldIrql);
+            return 0;
+        },
+        // IoReleaseCancelSpinLock(oldIrql)
+        (oldIrql) => {
+            GuestMemory.writeGuest32(cancelSpinLockPointer, 0);
+            Irql.lowerIrql(oldIrql >>> 0);
+            return 0;
+        },
+        // IoRegisterDeviceInterface(pdoPtr, guidPtr, refStringPtr, outNamePtr):
+        // cria \DosDevices\#{guid}#{ref} -> device e registra desabilitada
+        (pdoPointer, guidPointer, _refStringPointer, outNamePointer) => {
+            let guidText = '';
+            for (let i = 0; i < 16; i++)
+                guidText += GuestMemory.readGuest8(guidPointer + i)
+                    .toString(16).padStart(2, '0');
+            const driverRoot = ObjectManager.lookup('\\Device');
+            let deviceName = 'PDO0';
+            if (driverRoot && driverRoot.children)
+                for (const child of driverRoot.children.values())
+                    if (child.data && child.data.nativeDevicePointer === pdoPointer)
+                        deviceName = child.name;
+            const linkName = '\\DosDevices\\#{' + guidText + '}';
+            ObjectManager.createSymlink(linkName, '\\Device\\' + deviceName);
+            deviceInterfaces.set(linkName, { enabled: false, deviceName });
+            const nameBuffer = GuestMemory.guestAllocBytes(linkName.length * 2 + 2);
+            GuestStrings.writeGuestWideString(nameBuffer, linkName);
+            GuestMemory.writeGuest16(outNamePointer, linkName.length * 2);
+            GuestMemory.writeGuest16(outNamePointer + 2, linkName.length * 2 + 2);
+            GuestMemory.writeGuest64(outNamePointer + 8, nameBuffer);
+            return 0;
+        },
+        // IoSetDeviceInterfaceState(symlinkUniPtr, enable): habilita a
+        // interface e dispara as notificacoes PnP registradas
+        (symlinkPointer, enable) => {
+            const linkName = GuestStrings.readUnicodeString(symlinkPointer);
+            const interfaceEntry = deviceInterfaces.get(linkName);
+            if (!interfaceEntry) return 0xC0000034 | 0;
+            interfaceEntry.enabled = (enable & 0xFF) !== 0;
+            if (interfaceEntry.enabled) {
+                for (const registration of plugPlayRegistrations) {
+                    const nameBuffer = GuestMemory.guestAllocBytes(
+                        linkName.length * 2 + 2);
+                    GuestStrings.writeGuestWideString(nameBuffer, linkName);
+                    os.execMsAbi(registration.callbackPointer, nameBuffer,
+                                 registration.contextPointer);
+                }
+            }
+            return 0;
+        },
+        // IoRegisterPlugPlayNotification(category, flags, callbackPtr, drvObj,
+        //                                context) -> handle de registro
+        (_category, _flags, callbackPointer, _driverObject, contextPointer) => {
+            const registration = { callbackPointer: callbackPointer >>> 0,
+                                   contextPointer: contextPointer >>> 0 };
+            plugPlayRegistrations.push(registration);
+            return 0;   // NTSTATUS sucesso
+        },
+        // IoUnregisterPlugPlayNotification(registrationHandle)
+        (registrationPointer) => {
+            const index = plugPlayRegistrations.findIndex(r =>
+                r.callbackPointer === (registrationPointer >>> 0));
+            if (index < 0) return 0xC0000034 | 0;
+            plugPlayRegistrations.splice(index, 1);
+            return 0;
+        },
+        // IoRegisterDriverReinitialization(drvObj, routinePtr, contextPtr):
+        // a rotina roda DEPOIS da inicializacao dos drivers de boot (NT)
+        (_driverObject, routinePointer, contextPointer) => {
+            Lifecycle.registerReinitialization(routinePointer >>> 0,
+                                               contextPointer >>> 0);
+            return 0;
+        },
+        // IoOpenDeviceRegistryKey(devicePtr, access, outKeyHandlePtr): a
+        // chave de servico do driver dono do device (caminho real do Enum)
+        (devicePointer, _access, outKeyHandlePointer) => {
+            const driverRoot = ObjectManager.lookup('\\Device');
+            let driverNode = null;
+            if (driverRoot && driverRoot.children)
+                for (const child of driverRoot.children.values())
+                    if (child.data && child.data.nativeDevicePointer === devicePointer &&
+                        child.data.driver)
+                        driverNode = child.data.driver;
+            if (!driverNode) return 0xC0000034 | 0;
+            const keyHandle = Registry.open(
+                '\\Registry\\Machine\\System\\Services\\' + driverNode.data.name);
+            if (!keyHandle) return 0xC0000034 | 0;
+            GuestMemory.writeGuest64(outKeyHandlePointer, keyHandle);
+            return 0;
+        },
+        // IoWMIRegistrationControl(devicePtr, action): registra/desregistra
+        // as classes WMI do device (action 0=register 1=unregister)
+        (devicePointer, action) => {
+            if ((action >>> 0) === 0)
+                wmiRegisteredDevices.add(devicePointer >>> 0);
+            else
+                wmiRegisteredDevices.delete(devicePointer >>> 0);
             return 0;
         },
     ],

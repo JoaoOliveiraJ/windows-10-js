@@ -14,10 +14,12 @@
 //   0x81000: contagem por vetor (u32 cada)   0x81100: ring buffer do teclado
 // ===========================================================================
 
+const Clock = require('ntos/ke/clock');
+
 const IDT_ADDR  = 0x82000;
 const STUB_SIZE = 10;
 const IRQ_COUNT = 0x81000;
-const KBD_HEAD  = 0x81200, KBD_TAIL = 0x81204, KBD_DATA = 0x81208;
+const KBD_HEAD  = 0x81400, KBD_TAIL = 0x81404, KBD_DATA = 0x81408;
 
 const CODE64_SEL = 0x18;   // seletor code64 da GDT (ver boot/stage2.asm)
 const INT_GATE   = 0x8E;   // present, ring0, interrupt gate
@@ -76,9 +78,10 @@ function init() {
     os.writePort8(0x21, 0x01); os.writePort8(0xA1, 0x01);
     os.writePort8(0x21, 0xFD); os.writePort8(0xA1, 0xFF);
 
-    // 2. constroi a IDT na memoria fisica (0x82000) — 80 vetores
+    // 2. constroi a IDT na memoria fisica (0x82000) — TODOS os 256 vetores
+    //    (o LAPIC pode entregar spurious 0xFF; vetor sem gate = crash)
     const stubs = os.getIrqStubTable();
-    for (let v = 0; v < 80; v++) setGate(v, stubs + v * STUB_SIZE);
+    for (let v = 0; v < 256; v++) setGate(v, stubs + v * STUB_SIZE);
 
     // 3. carrega a IDT e liga interrupcoes (sti dentro do loadIdt)
     os.loadIdt(IDT_ADDR, 256 * 16);
@@ -91,7 +94,8 @@ function init() {
 
 // LAPIC timer one-shot para medir a frequencia do bus, depois periodico
 function startLapicTimer() {
-    const Clock = require('ntos/ke/clock');
+    // habilita o LAPIC PRIMEIRO (SVR: spurious 0xFF + software enable)
+    os.lapicWrite(0xF0, 0x1FF);
     os.lapicWrite(LAPIC_TPR, 0);                    // TPR = 0 (nada mascarado)
     os.lapicWrite(LAPIC_LVT_LINT0, 0x10000);        // LINT0 mascarado
     os.lapicWrite(LAPIC_LVT_LINT1, 0x10000);        // LINT1 mascarado

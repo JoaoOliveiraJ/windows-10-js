@@ -5,9 +5,12 @@
 
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
+const Registry = require('ntos/cm/registry');
 const NtAbi = require('win32/nt-abi');
+const Irql = require('ntos/ke/irql');
 
 const US = NtAbi.UNICODE_STRING;
+const TWO_POW_63 = 0x8000000000000000;
 
 // RtlFree*String real: libera o buffer e zera os campos
 function freeString(pointer) {
@@ -55,7 +58,6 @@ function appendToUnicodeString(destPointer, newText) {
 // spinlock (test-and-set + IRQL DISPATCH) para os ExInterlocked* de lista —
 // mesma semantica dos Ke*SpinLock (ver ke.js)
 function spinLockAcquire(spinLockPointer) {
-    const Irql = require('ntos/ke/irql');
     const oldIrql = Irql.getIrql();
     Irql.raiseIrql(Irql.DISPATCH_LEVEL);
     for (;;) {
@@ -66,9 +68,55 @@ function spinLockAcquire(spinLockPointer) {
     }
 }
 function spinLockRelease(spinLockPointer, oldIrql) {
-    const Irql = require('ntos/ke/irql');
     GuestMemory.writeGuest32(spinLockPointer, 0);
     Irql.lowerIrql(oldIrql);
+}
+
+// RtlQueryRegistryValues[Ex](relativeTo, pathWStr, queryTablePtr, contextPtr,
+// environmentPtr): anda a RTL_QUERY_REGISTRY_TABLE — cada entrada tem Name
+// (PCWSTR). No NT a versao sem Ex chama esta (mesma assinatura).
+function queryRegistryValues(relativeTo, pathPointer, queryTablePointer,
+                             _contextPointer, _environmentPointer) {
+    const keyPath = GuestStrings.readGuestWideString(pathPointer);
+    os.debugPrint('[rtl] QueryRegistry path="' + keyPath +
+                  '" table=0x' + (queryTablePointer >>> 0).toString(16));
+    const keyHandle = Registry.open(keyPath);
+    if (!keyHandle) return 0xC0000034 | 0;
+    let cursor = queryTablePointer;
+    for (;;) {
+        const queryRoutine = GuestMemory.readGuest64(cursor);
+        const flags = GuestMemory.readGuest32(cursor + 8);
+        const namePointer = GuestMemory.readGuest64(cursor + 0x10);
+        const entryContext = GuestMemory.readGuest64(cursor + 0x18);
+        const defaultType = GuestMemory.readGuest32(cursor + 0x20);
+        const defaultData = GuestMemory.readGuest64(cursor + 0x28);
+        const defaultLength = GuestMemory.readGuest32(cursor + 0x30);
+        if (!queryRoutine && !namePointer) break;   // fim da tabela
+        // Name e' PCWSTR (string wide crua), NAO UNICODE_STRING*
+        const valueName = namePointer
+            ? GuestStrings.readGuestWideString(namePointer) : '';
+        const entry = valueName
+            ? Registry.getValue(keyHandle, valueName) : null;
+        if (entry && entryContext) {
+            // RTL_QUERY_REGISTRY_DIRECT: escreve o valor direto
+            if (entry.type === 4 && entry.data.length >= 4) {
+                GuestMemory.writeGuest32(entryContext,
+                    entry.data[0] | (entry.data[1] << 8) |
+                    (entry.data[2] << 16) | (entry.data[3] << 24));
+            } else {
+                for (let i = 0; i < entry.data.length; i++)
+                    GuestMemory.writeGuest8(entryContext + i,
+                                            entry.data[i]);
+            }
+        } else if (!entry && defaultData && entryContext &&
+                   defaultType === 4) {
+            GuestMemory.writeGuest32(entryContext,
+                GuestMemory.readGuest32(defaultData));
+        }
+        cursor += 0x38;   // sizeof(RTL_QUERY_REGISTRY_TABLE) x64
+    }
+    Registry.closeHandle(keyHandle);
+    return 0;
 }
 
 module.exports = {
@@ -110,10 +158,22 @@ module.exports = {
         'strchr', 'strstr',
         'sprintf', 'snprintf',
         'RtlRandom', 'RtlRandomEx',
+        'RtlVerifyVersionInfo',
+        'VerSetConditionMask',
+        'RtlWriteRegistryValue',
+        'RtlQueryRegistryValues',
+        'RtlQueryRegistryValuesEx',
+        '_vsnwprintf',
     ],
     handlers: [
-        // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer
+        // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer.
+        // Semantica REAL do NT (WDK/ReactOS): SourceString NULL -> Length=0,
+        // MaximumLength=0, Buffer=NULL (sem ler endereco 0!)
         (outputPointer, wideStringPointer) => {
+            if (!wideStringPointer) {
+                GuestStrings.writeStringFields(outputPointer, 0, 0, 0);
+                return 0;
+            }
             const text = GuestStrings.readGuestWideString(wideStringPointer);
             GuestStrings.writeStringFields(outputPointer, text.length * 2,
                                            text.length * 2 + 2, wideStringPointer);
@@ -152,8 +212,13 @@ module.exports = {
             if (caseInsensitive) { a = a.toLowerCase(); b = b.toLowerCase(); }
             return a === b ? 1 : 0;
         },
-        // RtlInitAnsiString(outPtr, cstrPtr): aponta o buffer (sem alocar)
+        // RtlInitAnsiString(outPtr, cstrPtr): aponta o buffer (sem alocar);
+        // SourceString NULL -> Length/MaximumLength=0, Buffer=NULL (como o NT)
         (outputPointer, cStringPointer) => {
+            if (!cStringPointer) {
+                GuestStrings.writeStringFields(outputPointer, 0, 0, 0);
+                return 0;
+            }
             const text = GuestStrings.readGuestCString(cStringPointer);
             GuestStrings.writeStringFields(outputPointer, text.length,
                                            text.length + 1, cStringPointer);
@@ -481,6 +546,84 @@ module.exports = {
             seed = (seed * 214013 + 2531011) >>> 0;
             GuestMemory.writeGuest32(seedPointer, seed);
             return (seed >>> 16) & 0x7FFF;
+        },
+        // RtlVerifyVersionInfo(outVerInfo, typeMask, conditionMask u64):
+        // OSVERSIONINFOEXW { size+0, Major+4, Minor+8, Build+12, Platform+16,
+        // ServicePackMajor+0x2C... } — compara com nossa versao (10.0.19045)
+        (versionInfoPointer, typeMask, conditionMask) => {
+            const JSOS_VERSION = { major: 10, minor: 0, build: 19045, spMajor: 0 };
+            const guestMajor = GuestMemory.readGuest32(versionInfoPointer + 4);
+            const guestMinor = GuestMemory.readGuest32(versionInfoPointer + 8);
+            const guestBuild = GuestMemory.readGuest32(versionInfoPointer + 12);
+            const condition = conditionMask >= TWO_POW_63
+                ? conditionMask - 0x10000000000000000 : conditionMask;
+            // avalia cada campo marcado (VER_MAJOR=1, MINOR=2, BUILD=4)
+            const checks = [];
+            if (typeMask & 1) checks.push([guestMajor, JSOS_VERSION.major]);
+            if (typeMask & 2) checks.push([guestMinor, JSOS_VERSION.minor]);
+            if (typeMask & 4) checks.push([guestBuild, JSOS_VERSION.build]);
+            for (const [expected, actual] of checks) {
+                // conditionMask: blocos de 3 bits por campo (VER_EQUAL=1,
+                // GREATER=2, LESS=4, GREATER_EQUAL=3, LESS_EQUAL=5)
+                const op = condition & 7;
+                const ok = op === 1 ? actual === expected :
+                           op === 2 ? actual > expected :
+                           op === 4 ? actual < expected :
+                           op === 3 ? actual >= expected :
+                           op === 5 ? actual <= expected : true;
+                if (!ok) return 0xC0000428 | 0;  // STATUS_REVISION_MISMATCH
+            }
+            return 0;
+        },
+        // VerSetConditionMask(mask u64, typeMask, condition) -> u64 mascara
+        (mask, typeMask, condition) => {
+            const base = mask >= TWO_POW_63 ? mask - 0x10000000000000000 : mask;
+            const shift = (typeMask >>> 0) * 3;   // aproximacao do algoritmo NT
+            return base + ((condition >>> 0) * Math.pow(2, shift));
+        },
+        // RtlWriteRegistryValue(relativeTo, pathWStr, nameWStr, type, data, size)
+        // — o primeiro arg e' RelativeTo (RTL_REGISTRY_ABSOLUTE etc.); path e
+        // name sao PCWSTR (wide)
+        (relativeTo, pathPointer, valueNamePointer, valueType, dataPointer,
+         dataSize) => {
+            // args 5+ chegam pela PILHA do convidado: o chamador (ABI MS) so
+            // garante os 32 bits baixos de um ULONG — os 32 altos sao lixo.
+            // TUDO que delimita loop/endereco precisa de >>> 0 aqui.
+            const dataLength = dataSize >>> 0;
+            const dataStart = dataPointer >>> 0;
+            const keyPath = GuestStrings.readGuestWideString(pathPointer);
+            const valueName = GuestStrings.readGuestWideString(valueNamePointer);
+            const keyHandle = Registry.openOrCreate(keyPath);
+            if (!keyHandle) return 0xC0000034 | 0;
+            const data = [];
+            for (let i = 0; i < dataLength; i++)
+                data.push(GuestMemory.readGuest8(dataStart + i));
+            const written = Registry.setValue(keyHandle, valueName,
+                                              valueType >>> 0, data);
+            Registry.closeHandle(keyHandle);
+            return written ? 0 : 0xC0000034 | 0;
+        },
+        // RtlQueryRegistryValues(relativeTo, pathWStr, queryTablePtr,
+        //                        contextPtr, environmentPtr)
+        queryRegistryValues,
+        // RtlQueryRegistryValuesEx: mesma assinatura/semantica (no NT a
+        // versao sem Ex e' que chama esta)
+        queryRegistryValues,
+        // _vsnwprintf(buf, sizeChars, fmt, vaListPtr): wide printf com va_list
+        // (x64: va_list = ponteiro p/ os args na pilha do chamador)
+        (bufferPointer, bufferChars, formatPointer, vaListPointer) => {
+            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const args = [];
+            for (let i = 0; i < 8; i++)
+                args.push(GuestMemory.readGuest64(vaListPointer + i * 8));
+            const text = GuestStrings.formatGuestText(formatText, args);
+            const writable = Math.min(text.length, (bufferChars >>> 0) - 1);
+            for (let i = 0; i < writable; i++)
+                GuestMemory.writeGuest16(bufferPointer + i * 2,
+                                         text.charCodeAt(i));
+            if (bufferChars > 0)
+                GuestMemory.writeGuest16(bufferPointer + writable * 2, 0);
+            return writable;
         },
     ],
 };

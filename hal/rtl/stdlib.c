@@ -45,12 +45,37 @@ void *calloc(size_t nmemb, size_t size) {
     return p;
 }
 
+static void realloc_diag_hex(uint64_t v) {
+    char buf[17];
+    int i;
+    for (i = 15; i >= 0; i--) { buf[i] = "0123456789abcdef"[v & 0xF]; v >>= 4; }
+    host_serial_write(buf, 16);
+}
+
 void *realloc(void *ptr, size_t size) {
     alloc_hdr_t *h;
     void *np;
     size_t old;
     if (!ptr) return malloc(size);
     h = (alloc_hdr_t *)ptr - 1;
+    /* magic invalido = ponteiro selvagem/double-free; size > 1GB e'
+       impossivel com 4GB de RAM (cabecalho sobrescrito) — como o pool
+       tagging do NT, falha alto com diagnostico em vez de corromper mais */
+    if (h->magic != ALLOC_MAGIC || h->size > 1024u * 1024 * 1024) {
+        /* cabecalho invalido: ponteiro selvagem ou heap corrompido */
+        host_serial_puts("REALLOC CORROMPIDO ptr=0x");
+        realloc_diag_hex((uint64_t)(uintptr_t)ptr);
+        host_serial_puts(" magic=0x");
+        realloc_diag_hex(h->magic);
+        host_serial_puts(" size=0x");
+        realloc_diag_hex(h->size);
+        host_serial_puts(" novo=0x");
+        realloc_diag_hex((uint64_t)size);
+        host_serial_puts(" caller=0x");
+        realloc_diag_hex((uint64_t)(uintptr_t)__builtin_return_address(0));
+        host_serial_puts("\n");
+        host_halt();
+    }
     old = h->size;
     if (size <= old && size + 64 >= old) {
         h->size = size;

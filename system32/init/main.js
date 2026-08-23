@@ -39,6 +39,8 @@ PeLoader.registerResolver(/^ntoskrnl\.exe$/i, (dll, name) => Ntoskrnl.lookup(dll
                           (dll, ordinal) => Ntoskrnl.lookupOrdinal(dll, ordinal));
 PeLoader.registerResolver(/^hal\.dll$/i, (dll, name) => Ntoskrnl.lookup(dll, name),
                           (dll, ordinal) => Ntoskrnl.lookupOrdinal(dll, ordinal));
+PeLoader.registerResolver(/^wmilib\.sys$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
+PeLoader.registerResolver(/^wpprecorder\.sys$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
 
 function banner() {
     Console.print('=================================================');

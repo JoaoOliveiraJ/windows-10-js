@@ -1,11 +1,34 @@
 /* string.c - implementacao do libc shim do jsOS */
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include "../core/host.h"
+
+static void memcpy_guard_hex(uint64_t v) {
+    char buf[17];
+    int i;
+    for (i = 15; i >= 0; i--) { buf[i] = "0123456789abcdef"[v & 0xF]; v >>= 4; }
+    host_serial_write(buf, 16);
+}
 
 void *memcpy(void *dst, const void *src, size_t n) {
     unsigned char *d = dst;
     const unsigned char *s = src;
     size_t i;
+    /* copia > 1GB e' impossivel com 4GB de RAM: ponteiro/tamanho corrompido
+       a montante — diagnostico claro em vez de um #PF criptico no meio */
+    if (n > 1024u * 1024 * 1024) {
+        host_serial_puts("MEMCPY GIGANTE n=0x");
+        memcpy_guard_hex((uint64_t)n);
+        host_serial_puts(" dst=0x");
+        memcpy_guard_hex((uint64_t)(uintptr_t)dst);
+        host_serial_puts(" src=0x");
+        memcpy_guard_hex((uint64_t)(uintptr_t)src);
+        host_serial_puts(" caller=0x");
+        memcpy_guard_hex((uint64_t)(uintptr_t)__builtin_return_address(0));
+        host_serial_puts("\n");
+        host_halt();
+    }
     for (i = 0; i < n; i++) d[i] = s[i];
     return dst;
 }

@@ -63,7 +63,11 @@ module.exports = {
         (unicodePointer) => {
             const routineName = GuestStrings.readUnicodeString(unicodePointer);
             const apiId = kernelExportLookup('', routineName);
-            if (apiId < 0) return 0;
+            if (apiId < 0) {
+                os.debugPrint('[mm] MmGetSystemRoutineAddress NAO ACHOU: ' +
+                              routineName);
+                return 0;
+            }
             return os.getWin32ThunkTable() + apiId * 10;   // stub de 10 bytes
         },
         // MmMapLockedPagesSpecifyCache(mdl, mode, cache, baseAddr, bugCheck,

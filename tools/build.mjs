@@ -20,7 +20,7 @@ const nasm = process.env.NASM || 'C:/Program Files/NASM/nasm.exe';
 const buildDir = path.join(root, 'build');
 
 const STAGE2_MAX = 64 * 512;      /* reserva do stage2 na imagem (LBA 1..64) */
-const KERNEL_MAX = 1536 * 1024;   /* kernel max: 1.5MB (stack em 3MB) */
+const KERNEL_MAX = 2048 * 1024;   /* kernel max: 2MB (1MB-3MB; stack em 3MB) */
 
 function walk(dir, out = []) {
     if (!existsSync(dir)) return out;
@@ -133,6 +133,15 @@ for (const group of groupNames) {
     ntoskrnlExports.push(...[...namesMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]));
 }
 
+// a tabela de trampolins asm tem MAX_WIN32 slots — falhar o build cedo se
+// a tabela de exports passar do tamanho (em vez de crashar no boot)
+const thunkAsmSource = readFileSync(path.join(root, 'hal', 'win32', 'win32thunk.asm'), 'utf8');
+const maxWin32 = Number(thunkAsmSource.match(/%define\s+MAX_WIN32\s+(\d+)/)[1]);
+if (32 + ntoskrnlExports.length > maxWin32) {
+    console.error(`exports demais: 32+${ntoskrnlExports.length} > MAX_WIN32=${maxWin32} — aumente no win32thunk.asm`);
+    process.exit(1);
+}
+
 const vsEditionsDir = 'C:/Program Files/Microsoft Visual Studio/2022';
 const vsEdition = newestSubdir(vsEditionsDir);
 const msvcTools = vsEdition ? newestSubdir(path.join(vsEdition, 'VC', 'Tools', 'MSVC')) : null;
@@ -183,6 +192,19 @@ driverSources.forEach((driverSource, index) => {
     }
     builtDrivers.push({ name: 'apps/' + driverName + '.sys', file: sysFile });
 });
+
+/* 0b2. driver de TERCEIRO (nao compilado por nos): o kbdclass.sys do Windows
+ * da maquina — copiado no build, nunca commitado no repo. Prova real de
+ * compatibilidade: binario Microsoft carregando no nosso kernel. */
+const windowsDriverSource = 'C:/Windows/System32/drivers/kbdclass.sys';
+if (existsSync(windowsDriverSource)) {
+    const kbdclassTarget = path.join(buildDir, 'kbdclass.sys');
+    writeFileSync(kbdclassTarget, readFileSync(windowsDriverSource));
+    builtDrivers.push({ name: 'apps/kbdclass.sys', file: kbdclassTarget });
+    console.log('driver Microsoft kbdclass.sys incluido (binario do sistema)');
+} else {
+    console.log('AVISO: kbdclass.sys nao encontrado no Windows desta maquina');
+}
 
 /* 0c. trampolim de AP (SMP): modo real -> 64 bits; o JS copia p/ 0x9000 no
  * boot e dispara INIT-SIPI-SIPI pelo LAPIC (ver system32/ntos/ke/smp.js) */

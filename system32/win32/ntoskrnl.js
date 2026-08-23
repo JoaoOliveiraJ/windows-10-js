@@ -17,6 +17,13 @@ for (const groupName of GROUP_ORDER) {
     exportNames.push(...group.names);
     exportHandlers.push(...group.handlers);
 }
+// guarda de integridade da ABI: name sem handler (ou vice-versa) desalinha
+// TODOS os ids dali pra frente — falhar alto no boot em vez de chamar errado
+if (exportNames.length !== exportHandlers.length) {
+    os.debugPrint('[ntoskrnl] FATAL: ' + exportNames.length + ' names x ' +
+                  exportHandlers.length + ' handlers (grupo desalinhado)');
+    os.halt();
+}
 
 function lookup(dllName, functionName) {
     // a tabela e' a mesma para ntoskrnl.exe e HAL.dll (no NT de verdade,
@@ -35,6 +42,8 @@ function lookupOrdinal(dllName, ordinal) {
 function handle(id, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
                 arg8, arg9, arg10, arg11, arg12, arg13, arg14) {
     const handlerFunction = exportHandlers[id];
+    if (globalThis.__traceApiCalls)
+        os.debugPrint('[api] ' + (exportNames[id] || ('#' + id)));
     if (!handlerFunction) {
         os.debugPrint('[ntoskrnl] export desconhecido id=' + id);
         return 0;

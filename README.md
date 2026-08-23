@@ -44,30 +44,29 @@ com `ntos/{ob,mm,ps,ex,fs,rtl,test}`, `drivers/`, `win32/`.
 ├── system32/                 # ★ O SISTEMA — 100% JavaScript ★
 │   ├── main.js               #   entry: raiz de composicao (monta o SO)
 │   ├── nano/                 #   NANOKERNEL: o mínimo
-│   │   ├── irq.js            #     interrupções (IDT construída em JS!)
-│   │   ├── ipc.js            #     canais de mensagens entre serviços
+│   │   ├── interrupts.js     #     IDT 256 vetores em JS + PIC/LAPIC timer
+│   │   ├── message-channels.js#    canais de mensagens entre serviços
 │   │   └── kernel.js         #     registro/chamada de serviços
 │   ├── ntos/                 #   subsistemas NT (≈ ntoskrnl.exe)
-│   │   ├── ob/objmgr.js      #     Object Manager (namespace, handles)
-│   │   ├── io/iomgr.js       #     I/O Manager (DriverObject + IRPs)
-│   │   ├── mm/memory-map.js  #     MM: mapa de memoria (única fonte)
-│   │   ├── mm/pfn.js         #       alocador de frames físicos (PFN)
-│   │   ├── mm/paging.js      #       edição real das tabelas de página
-│   │   ├── mm/virtual-memory.js#     VirtualAlloc/Free (VA->frame real)
-│   │   ├── mm/memory.js      #       visão heap/RAM
-│   │   ├── ps/scheduler.js   #     Process Manager (escalonador)
-│   │   ├── ex/syscalls.js    #     Executive: tabela de syscalls
-│   │   ├── fs/vfs.js         #     VFS (FS em memória)
-│   │   ├── fs/ntfs.js        #     NTFS real (leitura: MFT, runlists)
-│   │   ├── rtl/module.js     #     runtime: mini CommonJS require()
-│   │   └── test/selftest.js  #     autoteste (marca SELFTEST_OK)
+│   │   ├── ob/               #     Object Manager (namespace, handles)
+│   │   ├── io/               #     I/O Manager (IRPs), PnP, work items
+│   │   ├── mm/               #     MM: PFN, paging, VirtualAlloc/Free
+│   │   ├── ke/               #     Kernel: IRQL, DPC, timers, SMP, clock TSC
+│   │   ├── ps/               #     Process Manager (escalonador, threads)
+│   │   ├── ex/               #     Executive: syscalls, lookaside, pool
+│   │   ├── cm/               #     Config Manager: Registry hive + Services
+│   │   ├── po/               #     Power Manager (IRP_MJ_POWER)
+│   │   ├── fs/               #     VFS + NTFS real (leitura: MFT, runlists)
+│   │   ├── rtl/              #     runtime: mini CommonJS require()
+│   │   └── test/             #     autoteste (marca SELFTEST_OK)
 │   ├── drivers/              #   drivers JS com DriverEntry (estilo NT)
 │   │   ├── video/vga.js      #     VGA 80x25 (writePhysical16 em 0xB8000)
 │   │   ├── input/keyboard.js #     teclado PS/2 (IRQ1/polling)
 │   │   ├── console/console.js#     console (VGA + serial)
 │   │   └── storage/atapio.js #     disco ATA PIO (portas 0x1F0-0x1F7)
 │   ├── win32/                #   subsistema Win32
-│   │   ├── pe.js             #     loader PE32+ (parse, seções, IAT)
+│   │   ├── pe-loader.js      #     loader PE32+ (seções, IAT, relocação)
+│   │   ├── ntoskrnl/         #     ~270 exports do kernel p/ drivers .sys
 │   │   └── win32.js          #     mini-kernel32 (GetStdHandle, WriteFile...)
 │   └── shell/shell.js        #   o "cmd.exe" do jsOS
 ├── apps/                     # programas do VFS (≈ Program Files)
@@ -219,9 +218,10 @@ ketime.sys, mmmem.sys, expool.sys, interlock.sys, irql.sys, rtlansi.sys,
 registry.sys, power.sys, lifecycle.sys, threads.sys, smpjob.sys. No shell:
 `loaddriver /echo.sys`.
 
-**Limites honestos**: nossa ABI de structs é um subconjunto documentado estilo
-NT — drivers WDM de terceiros (com centenas de exports e semântica exata)
-continuam fora de alcance; o caminho é expandir a tabela export a export.
+**Limites honestos**: a tabela cobre o que o kbdclass.sys e os drivers de
+teste usam; drivers com exports ainda não implementados aparecem no log
+(`MmGetSystemRoutineAddress NAO ACHOU`) e o caminho é expandir export a
+export, com semântica real — sem stubs.
 
 ## SMP (multiprocessamento)
 
@@ -248,14 +248,40 @@ real a sequência funciona). Nesse caso o boot degrada para 1 CPU e o
 autoteste pula os testes de paralelismo (log `[selftest] ... WHPX`). O QEMU
 já roda com `-smp 4`: se o WHPX for corrigido, tudo liga sozinho.
 
-## E drivers .sys do Windows?
+## E drivers .sys do Windows? Carrega de verdade
 
-**Não é viável** — drivers WDM dependem do ntoskrnl, HAL, I/O Manager, PnP,
-Registry e dezenas de subsistemas com semântica exata do Windows NT; é a parte
-mais difícil do ReactOS. O jsOS tem seu próprio modelo de drivers **em
-JavaScript** (`system32/drivers/video/vga.js`, `input/keyboard.js` são drivers
-de verdade, falando com hardware via `os.inb/outb/poke`), que é o caminho
-sustentável para este projeto crescer.
+**Sim — o jsOS carrega um driver binário da Microsoft**: o `kbdclass.sys` do
+próprio Windows 10/11 (copiado de `C:\Windows\System32\drivers` no build —
+não fica no repo) passa pelo nosso loader PE e tem seu `DriverEntry`
+executado até o fim, coberto pelo autoteste.
+
+Para chegar aqui foi preciso, em JS:
+
+- **Relocação PE completa** (`.reloc` DIR64/HIGHLOW/HIGH): a ImageBase
+  preferida (`0x1c0000000`) está fora do nosso identity map, então a imagem é
+  realocada para um slot livre e todos os fixups aplicados.
+- **Semente do GS cookie**: o Windows inicializa o `__security_cookie` com
+  entropia no load; o loader varre a imagem e troca o default do linker
+  (`0x2B992DDFA232`) por um valor do TSC — senão o `__fastfail` (int 0x29)
+  dispara na primeira função com `/GS`.
+- **~270 exports do ntoskrnl/HAL/wmilib/WppRecorder implementados em JS**
+  (`system32/win32/ntoskrnl/*.js`, agrupados por subsistema): o `DriverEntry`
+  do kbdclass chama de `MmGetSystemRoutineAddress` a `EtwRegister`,
+  `WppAutoLogStart`, `IoWMIRegistrationControl`, `RtlWriteRegistryValue`,
+  `ExAllocatePoolWithTag`, spinlocks, remove locks, etc.
+- **Registry real**: o driver lê/escreve `\Registry\Machine\System\Services`
+  via `RtlWriteRegistryValue`/`RtlQueryRegistryValues` e `Zw*Key`.
+
+Detalhe de ABI que importa: argumentos 5+ chegam pela pilha e o chamador só
+garante os 32 bits baixos de um `ULONG` — todo handler mascara com `>>> 0`
+antes de usar tamanho/offset (uma leitura de `dataSize` sem máscara virava um
+loop de bilhões de iterações; bug caçado com guardas de heap no shim C e
+resolvido contra o mapa de símbolos do kernel.elf via
+`tools/resolve-symbols.py`).
+
+O jsOS também tem seu próprio modelo de drivers **em JavaScript**
+(`system32/drivers/video/vga.js`, `input/keyboard.js` são drivers de verdade,
+falando com hardware via `os.inb/outb/poke`).
 
 ## Build e execução
 
@@ -294,7 +320,12 @@ execução de programa do VFS, escalonador) e imprime `SELFTEST_OK` na serial.
 
 ## Roadmap (próximos passos possíveis)
 
-- IDT própria + IRQ1 de teclado (hoje o teclado é polling 100% JS)
-- Persistência: driver ATA PIO em JS + FS simples em setores do disco
-- Timer IRQ0 → escalonador preemptivo (troca de contexto real)
+- ~~IDT própria + IRQ real~~ ✅ feito: IDT de 256 vetores construída em JS,
+  IRQ1 de teclado por interrupção de verdade e **LAPIC timer a 100 Hz** com
+  dispatch estilo NT (o stub asm só conta o evento; o handler JS roda no
+  dispatch de IRQs pendentes — modelo ISR→DPC)
+- Port driver de teclado (i8042prt-like) alimentando o kbdclass.sys via
+  IOCTL_INTERNAL_KEYBOARD_CONNECT
+- Persistência: escrita no disco ATA + NTFS com escrita
+- Preempção de threads JS pelo quantum do LAPIC timer
 - Modo gráfico (VBE/framebuffer) e desktop em JS

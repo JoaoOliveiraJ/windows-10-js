@@ -2,7 +2,8 @@
  * ktimer.c - KTIMER real: KeInitializeTimer/KeSetTimer/KeSetTimerEx/
  * KeCancelTimer/KeReadStateTimer/KeDelayExecutionThread + DPC no disparo.
  * \Device\KTimer devolve "ktimer-ok" se: timer simples sinalizou e rodou o
- * DPC, o periodico rearmou (>=3 disparos em 45ms c/ periodo 10ms) e o cancel
+ * DPC, o periodico rearmou (>=3 disparos em 80ms c/ periodo 10ms — janela
+ * folgada porque o host (WHPX) pode estacionar a vCPU por ~15ms) e o cancel
  * impediu o terceiro timer.
  */
 #include "jsos-driver.h"
@@ -45,12 +46,12 @@ static NTSTATUS ktimerRead(PDEVICE_OBJECT deviceObject, PIRP irp) {
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) {
-    LARGE_INTEGER due20ms, delay45ms, dueFarFuture;
+    LARGE_INTEGER due20ms, delay80ms, dueFarFuture;
     (void)registryPath;
     DbgPrint("ktimer.sys: DriverEntry\r\n");
 
     due20ms.QuadPart = -(20 * 10000);        /* 20 ms relativo (100ns) */
-    delay45ms.QuadPart = -(45 * 10000);
+    delay80ms.QuadPart = -(80 * 10000);      /* 80 ms: 6 disparos esperados */
     dueFarFuture.QuadPart = -(60 * 1000 * 10000); /* 60 s relativo */
 
     /* timer simples: sinaliza + roda o DPC apos 20ms */
@@ -58,7 +59,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) 
     KeInitializeDpc(&oneShotDpc, oneShotDpcRoutine, &oneShotDpcRan);
     KeSetTimer(&oneShotTimer, due20ms, &oneShotDpc);
 
-    /* periodico: 10ms; em 45ms deve disparar >= 3 vezes */
+    /* periodico: 10ms; na janela de 80ms dispara 6 vezes (>=3 com folga) */
     KeInitializeTimer(&periodicTimer);
     KeInitializeDpc(&periodicDpc, periodicDpcRoutine, &periodicCount);
     KeSetTimerEx(&periodicTimer, due20ms, 10, &periodicDpc);
@@ -70,7 +71,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) 
                    KeReadStateTimer(&cancelledTimer) == 0;
 
     /* espera real que processa timers e DPCs durante o atraso */
-    KeDelayExecutionThread(KernelMode, FALSE, &delay45ms);
+    KeDelayExecutionThread(KernelMode, FALSE, &delay80ms);
     KeCancelTimer(&periodicTimer);
 
     driverObject->MajorFunction[IRP_MJ_READ] = ktimerRead;

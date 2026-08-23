@@ -115,6 +115,38 @@ static JSValue prim_rdtsc(JSContext *ctx, JSValueConst this_val,
     return JS_NewFloat64(ctx, (double)lo + (double)hi * 4294967296.0);
 }
 
+/* ---- os.armDataWriteWatchpoint(addr) / os.disarmDataWatchpoint():
+   watchpoint de HARDWARE nos registradores de debug (DR0/DR7): a CPU gera
+   #DB (vetor 1) logo apos QUALQUER instrucao que escreva nos 8 bytes a
+   partir de addr — o dump da excecao mostra o RIP do escritor. Cobre
+   escritas de drivers, do nosso C e de stubs asm (o watch por software no
+   dispatch JS so enxerga fronteiras de chamada de API). ---- */
+static JSValue prim_armDataWriteWatchpoint(JSContext *ctx,
+                                           JSValueConst this_val,
+                                           int argc, JSValueConst *argv) {
+    uint32_t addr;
+    uint64_t dr7;
+    (void)this_val; (void)argc;
+    JS_ToUint32(ctx, &addr, argv[0]);
+    __asm__ volatile("mov %0, %%dr0" :: "r"((uint64_t)addr));
+    dr7 = 0x1                  /* L0: watchpoint 0 localmente habilitado */
+        | (0x1ULL << 16)       /* RW0 = 01: SOMENTE escrita de dados */
+        | (0x2ULL << 18);      /* LEN0 = 10: janela de 8 bytes */
+    __asm__ volatile("mov %0, %%dr7" :: "r"(dr7) : "memory");
+    return JS_UNDEFINED;
+}
+
+static JSValue prim_disarmDataWatchpoint(JSContext *ctx,
+                                         JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    uint64_t dr7;
+    (void)this_val; (void)argc; (void)argv;
+    __asm__ volatile("mov %%dr7, %0" : "=r"(dr7));
+    dr7 &= ~(uint64_t)0x1;                 /* desliga L0 */
+    __asm__ volatile("mov %0, %%dr7" :: "r"(dr7) : "memory");
+    return JS_UNDEFINED;
+}
+
 const JSCFunctionListEntry jsos_irq_funcs[] = {
     JS_CFUNC_DEF("loadIdt", 2, prim_loadIdt),
     JS_CFUNC_DEF("getIrqStubTable", 0, prim_getIrqStubTable),
@@ -124,5 +156,7 @@ const JSCFunctionListEntry jsos_irq_funcs[] = {
     JS_CFUNC_DEF("lapicRead", 1, prim_lapicRead),
     JS_CFUNC_DEF("lapicWrite", 2, prim_lapicWrite),
     JS_CFUNC_DEF("rdtsc", 0, prim_rdtsc),
+    JS_CFUNC_DEF("armDataWriteWatchpoint", 1, prim_armDataWriteWatchpoint),
+    JS_CFUNC_DEF("disarmDataWatchpoint", 0, prim_disarmDataWatchpoint),
 };
-const int jsos_irq_funcs_count = 8;
+const int jsos_irq_funcs_count = 10;

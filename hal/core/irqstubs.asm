@@ -7,17 +7,17 @@
 ; PIC, restaura e iretq. Nao chama C nem JS (seguro em contexto de IRQ).
 ;
 ; Mapa de memoria fisica compartilhada:
-;   0x81000: u32 irq_count[80]        (contagem de interrupcoes por vetor)
-;   0x81200: ring buffer do teclado   (head u32 @0x81200, tail u32 @0x81204,
-;                                      dados 256B @0x81208)
+;   0x81000: u32 irq_count[256]       (contagem de interrupcoes por vetor)
+;   0x81400: ring buffer do teclado   (head u32 @0x81400, tail u32 @0x81404,
+;                                      dados 256B @0x81408)
 ; ---------------------------------------------------------------------------
 [bits 64]
 
-%define NSTUBS      80
+%define NSTUBS      256
 %define IRQ_COUNT   0x81000
-%define KBD_HEAD    0x81200
-%define KBD_TAIL    0x81204
-%define KBD_DATA    0x81208
+%define KBD_HEAD    0x81400
+%define KBD_TAIL    0x81404
+%define KBD_DATA    0x81408
 %define LAPIC_EOI   0xFEE000B0
 
 global irq_stub_table
@@ -45,16 +45,21 @@ irq_common:
     push r9
     push r10
     push r11
-    mov edi, [rsp + 72]         ; vetor empilhado pelo stub (push byte i)
+    movzx edi, byte [rsp + 72]  ; vetor (push byte sign-extends: le so o byte)
 
     ; irq_count[edi]++
     mov eax, IRQ_COUNT
     inc dword [rax + rdi*4]
 
-    ; excecoes (vetores 0-31): NAO da p/ iret cego (voltaria na mesma
-    ; instrucao que falhou). Diagnostico na serial e para a maquina.
+    ; excecoes (vetores 0-31) E o int 0x29 (failfast do Windows): NAO da p/
+    ; iret cego (voltaria na mesma instrucao ou em padding). Diagnostico e halt.
     cmp edi, 0x20
-    jae .is_irq
+    jae .maybe_failfast
+    jmp .is_exception
+.maybe_failfast:
+    cmp edi, 0x29                ; int 0x29 = KiRaiseSecurityCheckFailure
+    jne .is_irq
+.is_exception:
     ; imprime "EX:#NN @ RIP" em COM1 (hex do vetor + RIP da falha) e halt
     mov dx, 0x3F8
     mov al, 'E'
@@ -75,8 +80,34 @@ irq_common:
     out dx, al
     mov al, ' '
     out dx, al
-    ; RIP da falha: 9 pushes + vetor do stub + error code -> [rsp+88]
+    ; RIP da falha: com error code (#DF 8, #TS 10, #NP 11, #SS 12, #GP 13,
+    ; #PF 14, #AC 17, #VC 29, #SX 30) esta em [rsp+88]; sem, em [rsp+80]
+    mov r10d, edi
+    cmp r10d, 8
+    je .with_error_code
+    cmp r10d, 10
+    je .with_error_code
+    cmp r10d, 11
+    je .with_error_code
+    cmp r10d, 12
+    je .with_error_code
+    cmp r10d, 13
+    je .with_error_code
+    cmp r10d, 14
+    je .with_error_code
+    cmp r10d, 17
+    je .with_error_code
+    cmp r10d, 21
+    je .with_error_code
+    cmp r10d, 29
+    je .with_error_code
+    cmp r10d, 30
+    je .with_error_code
+    mov r10, [rsp + 80]
+    jmp .rip_digits
+.with_error_code:
     mov r10, [rsp + 88]
+.rip_digits:
     mov ecx, 16
 .ripdig:
     rol r10, 4
@@ -84,6 +115,143 @@ irq_common:
     call .hexdig
     dec ecx
     jnz .ripdig
+    mov al, ' '
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'P'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, [rsp + 96]      ; RSP salvo no frame (se houver) / aproximado
+    mov ecx, 16
+.rspdig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .rspdig
+    ; imprime RDX e RCX salvos (registradores no momento da falha)
+    mov al, ' '
+    out dx, al
+    mov al, 'D'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, [rsp + 48]      ; rdx salvo
+    mov ecx, 16
+.rdxdig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .rdxdig
+    mov al, ' '
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, [rsp + 56]      ; rcx salvo
+    mov ecx, 16
+.rcxdig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .rcxdig
+    ; RSP da falha esta em [rsp+112] (frame com error code); [RSP] = retorno
+    mov al, ' '
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'A'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, [rsp + 112]     ; RSP no momento da falha
+    mov r10, [r10]           ; endereco de retorno do chamador
+    mov ecx, 16
+.radig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .radig
+    ; CR2 (endereco da falha em #PF)
+    mov al, ' '
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, '2'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, cr2
+    mov ecx, 16
+.cr2dig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .cr2dig
+    mov al, 0x0D
+    out dx, al
+    mov al, 0x0A
+    out dx, al
+    ; dump da pilha da falha (32 qwords): vetores sem error code (int 0x29
+    ; inclusive) tem o RSP da falha em rsp+104 (72 regs + 8 vetor + 24 frame
+    ; CPU ring0). O 1o qword e' o retorno p/ a funcao que falhou (int 0x29).
+    mov al, 'S'
+    out dx, al
+    mov al, 'T'
+    out dx, al
+    mov al, ' '
+    out dx, al
+    mov r10, rsp
+    add r10, 104
+    ; BASE = endereco absoluto do qword +00 do dump
+    push r10
+    mov al, 'B'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov r10, [rsp]
+    mov ecx, 16
+.basedig:
+    rol r10, 4
+    mov eax, r10d
+    call .hexdig
+    dec ecx
+    jnz .basedig
+    pop r10
+    xor r11d, r11d
+.stkdump:
+    mov al, ' '
+    out dx, al
+    mov eax, r11d
+    shl eax, 3
+    mov r9d, eax
+    shr eax, 4
+    call .hexdig
+    mov eax, r9d
+    and eax, 15
+    call .hexdig
+    mov al, '='
+    out dx, al
+    mov r9, [r10 + r11*8]
+    mov ecx, 16
+.stkval:
+    rol r9, 4
+    mov eax, r9d
+    call .hexdig
+    dec ecx
+    jnz .stkval
+    inc r11d
+    cmp r11d, 32
+    jb .stkdump
     mov al, 0x0D
     out dx, al
     mov al, 0x0A

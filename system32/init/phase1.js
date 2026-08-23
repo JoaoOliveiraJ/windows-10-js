@@ -14,6 +14,7 @@ const ConsoleDriver = require('drivers/console/console');
 const KeyboardDriver = require('drivers/input/keyboard');
 const Ntfs = require('ntos/fs/ntfs');
 const PciBus = require('drivers/bus/pci');
+const Lifecycle = require('win32/ntoskrnl/lifecycle');
 
 function init() {
     os.debugPrint('[boot] fase 1: I/O manager + drivers + servicos');
@@ -42,6 +43,8 @@ function init() {
     // drivers de servico lidos do Registry + PnP start
     const loaded = Services.startBootDrivers();
     os.debugPrint('[boot] servicos carregados: ' + loaded);
+    // rotinas IoRegisterDriverReinitialization rodam agora (como no NT)
+    Lifecycle.runReinitializationRoutines();
 }
 
 module.exports = { init };

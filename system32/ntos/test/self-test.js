@@ -126,16 +126,15 @@ function run() {
     assert(ntfs.read('/HELLO.TXT').indexOf('jsOS') >= 0, 'ntfs read');
     assert(ObjectManager.open('\\DosDevices\\D:\\HELLO.TXT') > 0, 'ntfs via D:');
 
-    // nanokernel: IRQ0/PIT — o timer DEVE estar disparando (IDT em JS,
-    // entrega real pela plataforma)
+    // nanokernel: LAPIC timer — o timer DEVE estar disparando (IDT em JS,
+    // entrega real pela plataforma). Janela generosa: a calibracao varia
     if (Interrupts.isAvailable()) {
         const t0 = Interrupts.tickCount();
-        const ClockSmp = require('ntos/ke/clock');
-        const waitEnd = ClockSmp.uptimeMs() + 100;
-        while (Interrupts.tickCount() === t0 && ClockSmp.uptimeMs() < waitEnd) {
+        const waitEnd = Clock.uptimeMs() + 500;
+        while (Interrupts.tickCount() === t0 && Clock.uptimeMs() < waitEnd) {
             /* espera o proximo tick de hardware */
         }
-        assert(Interrupts.tickCount() > t0, 'timer IRQ0 disparando (entrega real)');
+        assert(Interrupts.tickCount() > t0, 'timer do LAPIC disparando (entrega real)');
     } else {
         os.debugPrint('[selftest] IDT nao carregada - tick test pulado');
     }
@@ -436,6 +435,14 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\Loader'), 'loader device criado');
     checkNativeDriver('\\Device\\Loader', 'loader-ok');
     Scheduler.kill(probePid);
+
+    // grupo 31: DRIVER DE TERCEIRO — o kbdclass.sys do Windows (binario
+    // Microsoft, relocado de 0x1c0000000 pelo nosso loader PE) carrega e
+    // registra seu AddDevice PnP
+    Ntoskrnl.loadDriver('/kbdclass.sys');
+    assert(ObjectManager.lookup('\\Driver\\kbdclass'),
+           'kbdclass.sys (Microsoft) carregado no namespace');
+    os.debugPrint('[selftest] kbdclass.sys da Microsoft carregado com sucesso');
 
     os.debugPrint('SELFTEST_OK');
 }

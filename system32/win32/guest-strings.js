@@ -8,25 +8,48 @@
 
 const GuestMemory = require('win32/guest-memory');
 
+// guarda contra leitura descontrolada: se o ponteiro estiver errado o loop
+// nunca acha o NUL e a string cresce ate estourar a heap (debug: stack trace)
+const MAX_GUEST_STRING_CHARS = 65536;
+
+function runawayStringDiagnostic(kind, startAddress) {
+    os.debugPrint('[strings] ' + kind + ' SEM NUL em 0x' +
+                  (startAddress >>> 0).toString(16) + ' (>64K chars)');
+    os.debugPrint(new Error('stack').stack || '(sem stack)');
+    os.halt();
+}
+
 function readGuestCString(address) {
+    const startAddress = address;
     let text = '';
+    let count = 0;
     for (let b = GuestMemory.readGuest8(address); b !== 0;
-         b = GuestMemory.readGuest8(++address))
+         b = GuestMemory.readGuest8(++address)) {
+        if (++count > MAX_GUEST_STRING_CHARS)
+            runawayStringDiagnostic('C-string', startAddress);
         text += String.fromCharCode(b);
+    }
     return text;
 }
 
 function readGuestWideString(address) {
+    const startAddress = address;
     let text = '';
+    let count = 0;
     for (let w = GuestMemory.readGuest16(address); w !== 0;
-         w = GuestMemory.readGuest16(address += 2))
+         w = GuestMemory.readGuest16(address += 2)) {
+        if (++count > MAX_GUEST_STRING_CHARS)
+            runawayStringDiagnostic('wide-string', startAddress);
         text += String.fromCharCode(w);
+    }
     return text;
 }
 
 function readUnicodeString(pointer) {
     const charCount = GuestMemory.readGuest16(pointer) / 2;
     const buffer = GuestMemory.readGuest32(pointer + 8);
+    if (charCount > MAX_GUEST_STRING_CHARS)
+        runawayStringDiagnostic('UNICODE_STRING len=' + charCount, pointer);
     let text = '';
     for (let i = 0; i < charCount; i++)
         text += String.fromCharCode(GuestMemory.readGuest16(buffer + i * 2));
@@ -36,6 +59,8 @@ function readUnicodeString(pointer) {
 function readAnsiString(pointer) {
     const length = GuestMemory.readGuest16(pointer);
     const buffer = GuestMemory.readGuest32(pointer + 8);
+    if (length > MAX_GUEST_STRING_CHARS)
+        runawayStringDiagnostic('ANSI_STRING len=' + length, pointer);
     let text = '';
     for (let i = 0; i < length; i++)
         text += String.fromCharCode(GuestMemory.readGuest8(buffer + i));

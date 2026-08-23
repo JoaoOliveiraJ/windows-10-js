@@ -66,11 +66,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath) 
 
     /* ObReferenceObjectByName: pega \Device\Echo com refcount, depois solta */
     RtlInitUnicodeString(&echoName, L"\\Device\\Echo");
-    if (NT_SUCCESS(ObReferenceObjectByName(&echoName, OBJ_CASE_INSENSITIVE,
-                                           0, NULL, KernelMode, NULL,
-                                           &echoDevice)) && echoDevice) {
-        LONG refs = ObfDereferenceObject(echoDevice);
-        obPassed = refs >= 1;   /* tinha o create + a nossa referencia */
+    {
+        NTSTATUS obStatus = ObReferenceObjectByName(&echoName,
+            OBJ_CASE_INSENSITIVE, 0, NULL, KernelMode, NULL, &echoDevice);
+        if (NT_SUCCESS(obStatus) && echoDevice) {
+            LONG refs = ObfDereferenceObject(echoDevice);
+            obPassed = refs >= 1;   /* tinha o create + a nossa referencia */
+        }
     }
 
     driverObject->MajorFunction[IRP_MJ_CREATE] = guardsCreate;

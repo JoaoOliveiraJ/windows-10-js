@@ -84,7 +84,8 @@ function checkTimers() {
         if (entry.dpcPointer)
             KeDpc.insertQueueDpc(entry.dpcPointer, 0, 0);
         if (entry.periodMs > 0) {
-            entry.dueMs = now + entry.periodMs;      // rearme periodico
+            entry.dueMs += entry.periodMs;   // rearme no horario AGENDADO
+            if (entry.dueMs <= now) entry.dueMs = now + entry.periodMs; // drift
         } else {
             activeTimers.splice(i, 1);
         }
