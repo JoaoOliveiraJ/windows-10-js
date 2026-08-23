@@ -444,10 +444,17 @@ function run() {
         let ackSt = 0;
         for (let i = 0; i < 1000 && !(ackSt & 1); i++) ackSt = os.readPort8(0x64);
         if (ackSt & 1) os.readPort8(0x60);   // consome o ACK
-        os.debugPrint('[rawkbd] scan habilitado; polling...');
+        os.debugPrint('[rawkbd] scan habilitado; polling... DIGITE AGORA');
         let lastCount = Interrupts.irqCount(Interrupts.VECTOR_KEYBOARD);
+        let lastBeat = 0;
         for (;;) {
             Interrupts.dispatchPending();
+            // heartbeat a cada 3s p/ saber que o poller esta vivo
+            if (Clock.uptimeMs() > lastBeat + 3000) {
+                lastBeat = Clock.uptimeMs();
+                os.debugPrint('[rawkbd] ...vivo (status 8042=0x' +
+                              os.readPort8(0x64).toString(16) + ', digite)');
+            }
             const irqNow = Interrupts.irqCount(Interrupts.VECTOR_KEYBOARD);
             if (irqNow !== lastCount) {
                 lastCount = irqNow;
@@ -590,13 +597,16 @@ function run() {
                                   (flags & 1 ? ' BREAK' : ' make'));
                 }
             };
+            const zeroTimeoutPtr = GuestMemory.guestAllocBytes(8);  // LARGE_INTEGER 0
             for (;;) {
                 Dispatcher.initializeEvent(echoEvent, 1, 0);
                 const echoRead = IoManager.readHandle(openResult.handle, {
                     userEvent: echoEvent, bufferLength: 48,
                 });
                 if (echoRead.status === 0x103) {   // pendente: espera a tecla
-                    while (Dispatcher.waitForSingleObject(echoEvent, 0) !== 0) {
+                    // espera NAO-bloqueante (timeout 0) + despacha IRQ/DPC —
+                    // waitForSingleObject(0) bloquearia sem despachar a ISR
+                    while (Dispatcher.waitForSingleObject(echoEvent, zeroTimeoutPtr) !== 0) {
                         Interrupts.dispatchPending();
                         Ntoskrnl.runKernelTasks();
                     }

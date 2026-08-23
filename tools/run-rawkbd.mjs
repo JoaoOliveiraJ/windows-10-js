@@ -30,7 +30,7 @@ const args = [
     '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,
     '-drive', `format=raw,if=ide,index=1,media=disk,file=${path.join(root, 'build', 'ntfs.img')}`,
     '-serial', 'stdio',
-    '-display', 'gtk',   // janela gtk — captura o teclado p/ o convidado
+    '-display', 'sdl',   // janela sdl — captura o teclado p/ o convidado
 ];
 console.log('Abrindo o QEMU (modo cru, SEM driver) — DIGITE na janela.');
 console.log('Se aparecer "[rawkbd] SCANCANE", o QEMU entrega tecla.\n');

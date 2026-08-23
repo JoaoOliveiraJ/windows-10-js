@@ -65,6 +65,7 @@ function* KbdService() {
     if (kbd.status !== 0) { os.debugPrint('[kbd] KeyboardClass0 indisponivel'); return; }
     os.debugPrint('[kbd] lendo teclas do driver real (i8042prt+kbdclass)');
     const eventPointer = GuestMemory.guestAllocBytes(0x18);
+    const zeroTimeoutPtr = GuestMemory.guestAllocBytes(8);  // LARGE_INTEGER 0
     let pendingRead = null;
     // despeja KEYBOARD_INPUT_DATA -> ASCII -> canal 'kbd'
     const pumpData = (dataPointer, info) => {
@@ -94,7 +95,7 @@ function* KbdService() {
             } else if (readRequest.status === 0x103) {
                 pendingRead = readRequest;
             }
-        } else if (Dispatcher.waitForSingleObject(eventPointer, 0) === 0) {
+        } else if (Dispatcher.waitForSingleObject(eventPointer, zeroTimeoutPtr) === 0) {
             // o READ completou: le os dados ANTES de liberar
             const dataPointer = pendingRead.pendingBufferAddress;
             const info = GuestMemory.readGuest64(pendingRead.pendingIrpAddress +
