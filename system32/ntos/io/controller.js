@@ -35,9 +35,12 @@ function pump(controllerPointer) {
     if (!queue || queue.length === 0) return;
     const request = queue.shift();
     // roda a rotina do pedido (PDRIVER_CONTROL):
-    // action = routine(deviceObject, irp=NULL, mapRegisterBase, context)
+    // action = routine(deviceObject, device->CurrentIrp, mapRegisterBase,
+    //                  context) — o Irp e' o CurrentIrp do device (wdm.h)
+    const currentIrp = readGuest64(request.deviceObjectPointer +
+                                   NtAbi.DEVICE_OBJECT.CURRENT_IRP);
     const action = os.execMsAbi(request.routinePointer,
-                                request.deviceObjectPointer, 0,
+                                request.deviceObjectPointer, currentIrp,
                                 request.mapRegisterBase, request.contextPointer);
     writeGuest32(controllerPointer + CO.QUEUED, queue.length);
     // DeallocateObject (1): libera o controlador e segue a fila
@@ -75,9 +78,12 @@ function ioAllocateController(controllerPointer, deviceObjectPointer,
                               routinePointer, contextPointer) {
     if (os.readPhysical8(controllerPointer + CO.BUSY) === 0) {
         os.writePhysical8(controllerPointer + CO.BUSY, 1);
-        // routine(deviceObject, irp=NULL, mapRegisterBase=NULL, context)
-        const action = os.execMsAbi(routinePointer, deviceObjectPointer, 0,
-                                    0, contextPointer);
+        // routine(deviceObject, device->CurrentIrp, mapRegisterBase=NULL,
+        //         context) — o Irp e' o CurrentIrp do device (wdm.h)
+        const currentIrp = readGuest64(deviceObjectPointer +
+                                       NtAbi.DEVICE_OBJECT.CURRENT_IRP);
+        const action = os.execMsAbi(routinePointer, deviceObjectPointer,
+                                    currentIrp, 0, contextPointer);
         if ((action >>> 0) !== 0) {
             os.writePhysical8(controllerPointer + CO.BUSY, 0);
             pump(controllerPointer);

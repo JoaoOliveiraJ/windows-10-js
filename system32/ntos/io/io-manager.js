@@ -318,7 +318,8 @@ function callNativeDriver(device, ioRequestPacket) {
     const needsBuffer = ioRequestPacket.major === IRP_MJ.READ ||
                         ioRequestPacket.major === IRP_MJ.WRITE ||
                         ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL;
-    const bufferLength = ioRequestPacket.major === IRP_MJ.WRITE ? dataLength : 2048;
+    const bufferLength = ioRequestPacket.major === IRP_MJ.WRITE ? dataLength :
+                         (ioRequestPacket.params.bufferLength || 2048);
 
     let bufferAddress = 0;
     if (needsBuffer) {
@@ -420,6 +421,33 @@ function waitPendingIoRequest(ioRequestPacket, timeoutMs) {
     return ioRequestPacket.status;
 }
 
+// cancela um IRP pendente (semantica do IoCancelIrp): marca Cancel, chama a
+// cancel routine do driver (que completa o IRP cancelado) e libera a memoria
+function cancelPendingIoRequest(ioRequestPacket) {
+    const irpAddress = ioRequestPacket.pendingIrpAddress;
+    if (!irpAddress) return ioRequestPacket.status;
+    GuestMemory.writeGuest8(irpAddress + IRP.CANCEL, 1);
+    const cancelRoutine = GuestMemory.readGuest64(irpAddress + IRP.CANCEL_ROUTINE);
+    if (cancelRoutine) {
+        GuestMemory.writeGuest64(irpAddress + IRP.CANCEL_ROUTINE, 0);
+        const stackPointer = GuestMemory.readGuest32(irpAddress +
+                                                     IRP.CURRENT_STACK_LOCATION);
+        const devicePointer = GuestMemory.readGuest32(stackPointer +
+                                                      SL.DEVICE_OBJECT);
+        os.execMsAbi(cancelRoutine, devicePointer, irpAddress);
+    }
+    GuestMemory.guestFreeBytes(irpAddress);
+    if (ioRequestPacket.pendingBufferAddress)
+        GuestMemory.guestFreeBytes(ioRequestPacket.pendingBufferAddress);
+    if (ioRequestPacket.pendingFileObjectPointer)
+        GuestMemory.guestFreeBytes(ioRequestPacket.pendingFileObjectPointer);
+    delete ioRequestPacket.pendingIrpAddress;
+    delete ioRequestPacket.pendingBufferAddress;
+    delete ioRequestPacket.pendingFileObjectPointer;
+    ioRequestPacket.status = 0xC0000120 >>> 0;   // STATUS_CANCELLED
+    return ioRequestPacket.status;
+}
+
 // ---- abertura/fechamento real: IRP_MJ_CREATE / IRP_MJ_CLOSE ----------------
 // Um handle = um FILE_OBJECT vivo no convidado; CREATE vai ao topo da pilha.
 let nextDeviceHandle = 1;
@@ -445,7 +473,7 @@ function openDevice(devicePath) {
                              GuestMemory.readGuest32(refCountAddress) + 1);
     const handle = nextDeviceHandle++;
     openDeviceHandles.set(handle, { device, fileObjectPointer, topPointer });
-    return { status: STATUS.SUCCESS, handle };
+    return { status: STATUS.SUCCESS, handle, fileObjectPointer };
 }
 
 function closeDevice(handle) {
@@ -468,10 +496,10 @@ function closeDevice(handle) {
 }
 
 // I/O num handle aberto (CREATE ja feito; o FILE_OBJECT e o do handle)
-function readHandle(handle) {
+function readHandle(handle, extraParams) {
     const entry = openDeviceHandles.get(handle);
     if (!entry) { const r = makeIoRequest(IRP_MJ.READ, {}); r.status = STATUS.NOT_FOUND; return r; }
-    const ioRequest = makeIoRequest(IRP_MJ.READ, {});
+    const ioRequest = makeIoRequest(IRP_MJ.READ, extraParams || {});
     ioRequest.fileObjectPointer = entry.fileObjectPointer;
     return callDriver('\\Device\\' + entry.device.name, ioRequest);
 }
@@ -626,7 +654,7 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    openDevice, closeDevice, readHandle, writeHandle,
                    pnpStartDevice, setDevicePowerState, queryDevicePowerState,
                    getDevicePowerState, dispatchNativePowerIrp,
-                   iofCallDriver, iofCompleteRequest,
+                   iofCallDriver, iofCompleteRequest, cancelPendingIoRequest,
                    buildSynchronousFsdRequest, buildDeviceIoControlRequest,
                    waitPendingIoRequest,
                    pnpRemoveDevice, queryDeviceId, registerPdoNativeAnswerer };

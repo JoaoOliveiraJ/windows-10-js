@@ -453,18 +453,126 @@ function run() {
 
     // grupo 33: PNP REAL — o bus da placa-mae cria os PDOs do 8042 (PNP0303
     // teclado / PNP0F13 mouse, portas 0x60/0x64 + IRQ1/IRQ12), o orquestrador
-    // chama o AddDevice do i8042prt e manda a sequencia PnP (capabilities,
-    // requirements, filter, START_DEVICE com a CM_RESOURCE_LIST).
-    // EM ANDAMENTO: o START do i8042prt ainda falha numa precondicao interna
-    // (extensao+0x1B8, a extensao de porta compartilhada do 8042) — o driver
-    // ja sonda o 8042 real nas portas (ver logs ps2 do QEMU). Nao fatal.
+    // chama o AddDevice do i8042prt, anexa o kbdclass (filtro de classe, que
+    // CONECTA a porta no AddDevice) e manda a sequencia PnP ao TOPO da pilha.
+    // O START do teclado sobe de verdade (ISR nativa do i8042 no vetor 0x21);
+    // o mouse fica sem START enquanto o mouclass nao estiver presente (como
+    // um PC sem o driver — o devnode fica com problema, o boot segue).
     const Motherboard = require('drivers/bus/motherboard');
     const Pnp = require('ntos/io/pnp');
     const motherboardPdos = Motherboard.enumerate();
+    let keyboardStackNode = null;
     for (const pdoEntry of motherboardPdos) {
         const fdoNode = Pnp.enumeratePdoStack(pdoEntry.node);
+        if (pdoEntry.node.name === 'I8042Kbd') keyboardStackNode = fdoNode;
         os.debugPrint('[selftest] stack de ' + pdoEntry.node.name + ': ' +
                       (fdoNode ? 'FDO criado' : 'sem driver'));
+    }
+
+    // grupo 34: TECLADO REAL fim-a-fim — abre a porta i8042 (o CREATE dele
+    // habilita a entrega do scancode) e o device de classe \Device\KeyboardClass0
+    // (kbdclass), e le uma tecla: 8042 -> IRQ1 -> ISR nativa do i8042prt ->
+    // DPC -> callback do kbdclass -> READ completado com KEYBOARD_INPUT_DATA.
+    // Sem tecla injetada pelo harness: nao fatal (KBDTEST_SKIP), o boot segue.
+    if (keyboardStackNode && keyboardStackNode.data.pnpStarted) {
+        const Dispatcher = require('ntos/ke/dispatcher');
+        const eventPointer = GuestMemory.guestAllocBytes(0x18);
+        Dispatcher.initializeEvent(eventPointer, 1, 0);   // SynchronizationEvent
+        // abre a PORTA do i8042 (o FDO funcional): o CREATE do driver marca a
+        // porta como "aberta", habilitando a entrega de scancodes ao kbdclass
+        const portOpenResult = IoManager.openDevice('\\Device\\' + keyboardStackNode.name);
+        assert(portOpenResult.status === 0, 'teclado: CREATE na porta i8042 falhou 0x' +
+               (portOpenResult.status >>> 0).toString(16));
+        // abre o device de CLASSE do kbdclass (criado no DriverEntry) e le
+        const openResult = IoManager.openDevice('\\Device\\KeyboardClass0');
+        assert(openResult.status === 0, 'teclado: CREATE no kbdclass falhou 0x' +
+               (openResult.status >>> 0).toString(16));
+        const readRequest = IoManager.readHandle(openResult.handle, {
+            userEvent: eventPointer,
+            bufferLength: 48,   // multiplo de KEYBOARD_INPUT_DATA (12 bytes)
+        });
+        if (readRequest.status === 0x103) {   // STATUS_PENDING: esperando tecla
+            os.debugPrint('KBDTEST_READY');   // o harness injeta a tecla agora
+            const zeroTimeout = GuestMemory.guestAllocBytes(8);
+            const deadline = Clock.uptimeMs() + 10000;
+            let completed = false;
+            while (Clock.uptimeMs() < deadline) {
+                Interrupts.dispatchPending();   // IRQ1 -> ISR nativa do i8042
+                Ntoskrnl.runKernelTasks();      // DPC -> callback do kbdclass
+                if (Dispatcher.waitForSingleObject(eventPointer, zeroTimeout) === 0) {
+                    completed = true;
+                    break;
+                }
+            }
+            if (completed) {
+                // KEYBOARD_INPUT_DATA: UnitId u16, MakeCode u16, Flags u16
+                const dataPointer = readRequest.pendingBufferAddress;
+                const makeCode = GuestMemory.readGuest16(dataPointer + 2);
+                const flags = GuestMemory.readGuest16(dataPointer + 4);
+                os.debugPrint('[selftest] tecla REAL recebida: MakeCode 0x' +
+                              makeCode.toString(16) + ' flags 0x' +
+                              flags.toString(16) + ' (' + readRequest.info +
+                              ' bytes)');
+                assert(makeCode === 0x1E, 'teclado: MakeCode esperado 0x1E (a)');
+                os.debugPrint('KBDTEST_OK');
+            } else {
+                os.debugPrint('KBDTEST_SKIP (sem tecla injetada em 10s)');
+            }
+            GuestMemory.guestFreeBytes(zeroTimeout);
+            if (completed) IoManager.waitPendingIoRequest(readRequest, 0);
+            else IoManager.cancelPendingIoRequest(readRequest);   // sem tecla: cancela
+        } else {
+            os.debugPrint('KBDTEST_SKIP (READ completou de cara: 0x' +
+                          (readRequest.status >>> 0).toString(16) + ')');
+        }
+        // modo ECO interativo (bundle com /kbdecho): le scancodes para sempre
+        // e imprime — para o usuario digitar numa janela do QEMU e ver o
+        // driver real (i8042prt + kbdclass) entregar cada tecla
+        if (MemoryFileSystem.exists('/kbdecho')) {
+            os.debugPrint('[kbdecho] lendo teclas do \\Device\\KeyboardClass0 ' +
+                          '(driver real i8042prt+kbdclass) — digite na janela');
+            const echoEvent = GuestMemory.guestAllocBytes(0x18);
+            const printEntries = (dataPointer, info) => {
+                for (let off = 0; off + 12 <= info; off += 12) {
+                    const makeCode = GuestMemory.readGuest16(dataPointer + off + 2);
+                    const flags = GuestMemory.readGuest16(dataPointer + off + 4);
+                    os.debugPrint('[kbdecho] MakeCode=0x' + makeCode.toString(16) +
+                                  (flags & 1 ? ' BREAK' : ' make'));
+                }
+            };
+            for (;;) {
+                Dispatcher.initializeEvent(echoEvent, 1, 0);
+                const echoRead = IoManager.readHandle(openResult.handle, {
+                    userEvent: echoEvent, bufferLength: 48,
+                });
+                if (echoRead.status === 0x103) {   // pendente: espera a tecla
+                    while (Dispatcher.waitForSingleObject(echoEvent, 0) !== 0) {
+                        Interrupts.dispatchPending();
+                        Ntoskrnl.runKernelTasks();
+                    }
+                    // captura os dados ANTES de waitPendingIoRequest liberar
+                    const dataPointer = echoRead.pendingBufferAddress;
+                    const info = GuestMemory.readGuest64(
+                        echoRead.pendingIrpAddress +
+                        NtAbi.IRP.IO_STATUS_INFORMATION);
+                    printEntries(dataPointer, info);
+                    IoManager.waitPendingIoRequest(echoRead, 0);
+                } else if (echoRead.status === 0 && echoRead.info > 0) {
+                    // completou na hora: result tem os bytes como string
+                    const text = echoRead.result;
+                    for (let off = 0; off + 12 <= echoRead.info; off += 12) {
+                        const makeCode = text.charCodeAt(off + 2) |
+                                         (text.charCodeAt(off + 3) << 8);
+                        const flags = text.charCodeAt(off + 4);
+                        os.debugPrint('[kbdecho] MakeCode=0x' + makeCode.toString(16) +
+                                      (flags & 1 ? ' BREAK' : ' make'));
+                    }
+                }
+            }
+        }
+        IoManager.closeDevice(openResult.handle);
+        IoManager.closeDevice(portOpenResult.handle);
+        GuestMemory.guestFreeBytes(eventPointer);
     }
 
     os.debugPrint('SELFTEST_OK');

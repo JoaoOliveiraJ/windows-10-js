@@ -51,6 +51,18 @@ const plugPlayRegistrations = [];
 // devices com classes WMI registradas (IoWMIRegistrationControl)
 const wmiRegisteredDevices = new Set();
 
+// acha o no \Device\<name> dono de um device pointer (para resolver o nome
+// do PDO em IoGetDeviceProperty/PhysicalDeviceObjectName)
+function findDeviceNodeByPointer(devicePointer) {
+    const deviceRoot = ObjectManager.lookup('\\Device');
+    if (!deviceRoot || !deviceRoot.children) return null;
+    for (const child of deviceRoot.children.values()) {
+        if (child.data && child.data.nativeDevicePointer === (devicePointer >>> 0))
+            return child;
+    }
+    return null;
+}
+
 // IO_REMOVE_LOCK offsets (wdm.h, bloco comum): Removed @0, IoCount @4,
 // WaitEvent (KEVENT) @0x10
 const REMOVE_LOCK = { REMOVED: 0, IO_COUNT: 4, WAIT_EVENT: 0x10 };
@@ -469,10 +481,34 @@ module.exports = {
             return devicePointer;
         },
         // IoGetDeviceProperty(devObj, property, outBuf, bufSize, outLenPtr)
-        // DevicePropertyHardwareID=1: o id do PDO PCI (string wide) — a
-        // assinatura real e' (devObj, property, bufferLength, outBuf, outLen)
+        // DevicePropertyHardwareID=1: o id do PDO PCI (string wide) —
+        // a assinatura real e' (devObj, property, bufferLength, outBuf, outLen)
         (devicePointer, property, bufferSize, outBufferPointer,
          outLengthPointer) => {
+            if ((property >>> 0) === 0xB) {
+                // DevicePropertyPhysicalDeviceObjectName: o NOME do PDO
+                // ("\Device\I8042Kbd") — o NT anda ate o PDO da pilha; aqui
+                // o chamador ja passa o PDO ou um device anexado a ele
+                let candidate = devicePointer >>> 0;
+                let nameNode = findDeviceNodeByPointer(candidate);
+                while (!nameNode && pdoOfAttachedDevice.has(candidate)) {
+                    candidate = pdoOfAttachedDevice.get(candidate);
+                    nameNode = findDeviceNodeByPointer(candidate);
+                }
+                if (!nameNode) return 0xC0000034 | 0;
+                const pdoName = '\\Device\\' + nameNode.name;
+                const needed = (pdoName.length + 1) * 2;   // inclui o NUL
+                if (bufferSize < needed) {
+                    GuestMemory.writeGuest32(outLengthPointer, needed);
+                    return 0xC0000023 | 0;   // STATUS_BUFFER_TOO_SMALL
+                }
+                for (let i = 0; i < pdoName.length; i++)
+                    GuestMemory.writeGuest16(outBufferPointer + i * 2,
+                                             pdoName.charCodeAt(i));
+                GuestMemory.writeGuest16(outBufferPointer + pdoName.length * 2, 0);
+                GuestMemory.writeGuest32(outLengthPointer, needed);
+                return 0;
+            }
             if ((property >>> 0) !== 1) return 0xC000000D | 0;
             // NT: a property de hardware mora no PDO — segue a cadeia de
             // attach ate achar o PDO PCI correspondente

@@ -612,9 +612,10 @@ module.exports = {
         // versao sem Ex e' que chama esta)
         queryRegistryValues,
         // _vsnwprintf(buf, sizeChars, fmt, vaListPtr): wide printf com va_list
-        // (x64: va_list = ponteiro p/ os args na pilha do chamador)
+        // (x64: va_list = ponteiro p/ os args na pilha do chamador). O formato
+        // e' WIDE (UTF-16) — ler como C-string truncaria no 1o byte nulo alto.
         (bufferPointer, bufferChars, formatPointer, vaListPointer) => {
-            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const formatText = GuestStrings.readGuestWideString(formatPointer);
             const args = [];
             for (let i = 0; i < 8; i++)
                 args.push(GuestMemory.readGuest64(vaListPointer + i * 8));

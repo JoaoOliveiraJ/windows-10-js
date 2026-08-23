@@ -97,8 +97,10 @@ function startLapicTimer() {
     // habilita o LAPIC PRIMEIRO (SVR: spurious 0xFF + software enable)
     os.lapicWrite(0xF0, 0x1FF);
     os.lapicWrite(LAPIC_TPR, 0);                    // TPR = 0 (nada mascarado)
-    os.lapicWrite(LAPIC_LVT_LINT0, 0x10000);        // LINT0 mascarado
-    os.lapicWrite(LAPIC_LVT_LINT1, 0x10000);        // LINT1 mascarado
+    // LINT0 = ExtINT (0x700, NAO mascarado): o caminho do PIC 8259 -> CPU
+    // (virtual wire mode) — sem isso a IRQ1 do teclado nao chega no LAPIC
+    os.lapicWrite(LAPIC_LVT_LINT0, 0x700);
+    os.lapicWrite(LAPIC_LVT_LINT1, 0x400);          // LINT1 = NMI (nao mascarado)
     os.lapicWrite(LAPIC_LVT_TIMER, 0x10000);        // timer mascarado p/ medir
     os.lapicWrite(LAPIC_TIMER_DIVIDE, 0x3);         // divide por 16
 

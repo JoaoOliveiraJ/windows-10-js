@@ -51,9 +51,18 @@ function callStartIo(devicePointer, irpPointer) {
     os.execMsAbi(startIoRoutine, devicePointer, irpPointer, 0);
 }
 
+// garante a KDEVICE_QUEUE inicializada (LIST circular vazia). Drivers que
+// serializam pelo CONTROLLER_OBJECT (i8042) nunca chamam KeInitializeDeviceQueue
+// e a fila nasce zerada — tratar zeros como "vazia" (como a lista vazia real)
+function queueEnsureInitialized(devicePointer) {
+    const queuePointer = queueHead(devicePointer);
+    if (readGuest64(queuePointer + DQ.ENTRY) === 0) queueInitialize(devicePointer);
+}
+
 // IoStartPacket(device, irp, keyPtr(ou key), cancelRoutine)
 // WDM real: key e' um PULONG (opcional); cancelRoutine pode ser NULL.
 function ioStartPacket(devicePointer, irpPointer, sortKey, cancelRoutine) {
+    queueEnsureInitialized(devicePointer);
     const queuePointer = queueHead(devicePointer);
     // a key chega como ponteiro p/ ULONG (assinatura WDM) ou 0
     const key = sortKey ? readGuest32(sortKey >>> 0) : 0xFFFFFFFF;
@@ -84,6 +93,7 @@ function ioStartPacket(devicePointer, irpPointer, sortKey, cancelRoutine) {
 
 // IoStartNextPacket(device, cancelable): tira o primeiro da fila e dispara
 function ioStartNextPacket(devicePointer, _cancelable) {
+    queueEnsureInitialized(devicePointer);
     const queuePointer = queueHead(devicePointer);
     const head = queuePointer + DQ.ENTRY;
     const first = readGuest64(head);                           // Flink
