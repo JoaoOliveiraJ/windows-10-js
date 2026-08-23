@@ -444,6 +444,31 @@ function run() {
            'kbdclass.sys (Microsoft) carregado no namespace');
     os.debugPrint('[selftest] kbdclass.sys da Microsoft carregado com sucesso');
 
+    // grupo 32: i8042prt.sys — o PORT driver PS/2 da Microsoft. DriverEntry
+    // registra AddDevice; o hardware init acontece no START_DEVICE (PnP)
+    globalThis.__traceApiCalls = true;   // rastreio da 1a subida do driver
+    Ntoskrnl.loadDriver('/i8042prt.sys');
+    globalThis.__traceApiCalls = false;
+    assert(ObjectManager.lookup('\\Driver\\i8042prt'),
+           'i8042prt.sys (Microsoft) carregado no namespace');
+    os.debugPrint('[selftest] i8042prt.sys da Microsoft carregado com sucesso');
+
+    // grupo 33: PNP REAL — o bus da placa-mae cria os PDOs do 8042 (PNP0303
+    // teclado / PNP0F13 mouse, portas 0x60/0x64 + IRQ1/IRQ12), o orquestrador
+    // chama o AddDevice do i8042prt e manda a sequencia PnP (capabilities,
+    // requirements, filter, START_DEVICE com a CM_RESOURCE_LIST).
+    // EM ANDAMENTO: o START do i8042prt ainda falha numa precondicao interna
+    // (extensao+0x1B8, a extensao de porta compartilhada do 8042) — o driver
+    // ja sonda o 8042 real nas portas (ver logs ps2 do QEMU). Nao fatal.
+    const Motherboard = require('drivers/bus/motherboard');
+    const Pnp = require('ntos/io/pnp');
+    const motherboardPdos = Motherboard.enumerate();
+    for (const pdoEntry of motherboardPdos) {
+        const fdoNode = Pnp.enumeratePdoStack(pdoEntry.node);
+        os.debugPrint('[selftest] stack de ' + pdoEntry.node.name + ': ' +
+                      (fdoNode ? 'FDO criado' : 'sem driver'));
+    }
+
     os.debugPrint('SELFTEST_OK');
 }
 

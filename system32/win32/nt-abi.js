@@ -50,6 +50,9 @@ module.exports = {
         DEVICE_EXTENSION: 0x40,  // logo apos o DEVICE_OBJECT (IoCreateDevice)
         DEVICE_TYPE: 0x48,
         STACK_SIZE: 0x4C,
+        QUEUE_LIST: 0x50,        // Queue.ListEntry (StartIo do NT)
+        DEVICE_QUEUE: 0x60,      // KDEVICE_QUEUE embutido (0x28 bytes)
+        DPC: 0x88,               // KDPC embutido do device (0x40 bytes)
         STRUCT_SIZE: 0x150,
         IO_TYPE: 3,
     },
@@ -105,7 +108,7 @@ module.exports = {
     STATUS: {
         SUCCESS: 0,
         PENDING: 0x103,
-        MORE_PROCESSING_REQUIRED: 0xC0000467 - 0x100000000,  // i32 sinal
+        MORE_PROCESSING_REQUIRED: 0xC0000016 - 0x100000000,  // i32 sinal
         INVALID_PARAMETER: 0xC000000D - 0x100000000,
         NOT_SUPPORTED: 0xC00000BB - 0x100000000,
     },
@@ -249,5 +252,86 @@ module.exports = {
         EXIT_TIME: 0x608,
         SIZE: 0xA00,
         TYPE_PROCESS: 3,              // KOBJECTS ProcessObject
+    },
+    // KINTERRUPT (wdm.h x64): objeto opaco p/ drivers — so o kernel toca.
+    // Offsets do layout oficial: ServiceRoutine/ServiceContext/SpinLock.
+    KINTERRUPT: {
+        TYPE: 0x00,              // InterruptObject = 22 (0x16)
+        SIZE_FIELD: 0x02,
+        LIST_ENTRY: 0x08,        // InterruptListEntry (cadeia do vetor)
+        SERVICE_ROUTINE: 0x18,   // PKSERVICE_ROUTINE (ISR nativa)
+        SERVICE_CONTEXT: 0x20,
+        SPIN_LOCK: 0x28,         // PKSPIN_LOCK (o do chamador ou o interno)
+        TICK_COUNT: 0x30,        // ULONG
+        ACTUAL_LOCK: 0x38,       // PKSPIN_LOCK (efetivo nas sincronizacoes)
+        VECTOR: 0x40,            // ULONG (vetor da IDT)
+        IRQL: 0x44,              // KIRQL (nivel do dispositivo)
+        SYNCHRONIZE_IRQL: 0x45,  // KIRQL
+        FLOATING_SAVE: 0x46,     // BOOLEAN
+        CONNECTED: 0x47,         // BOOLEAN
+        NUMBER: 0x48,            // CCHAR (CPU)
+        SHARE_VECTOR: 0x4A,      // BOOLEAN
+        MODE: 0x4C,              // KINTERRUPT_MODE (Latched=0/LevelSensitive=1)
+        SHARE_DISPOSITION: 0x50, // BOOLEAN (shared ou nao)
+        DISPATCH_ADDRESS: 0x58,  // PVOID (KiInterruptDispatch no NT)
+        SIZE: 0x100,
+        TYPE_INTERRUPT: 0x16,
+    },
+    // KDEVICE_QUEUE (wdm.h x64, sizeof 0x28) — dentro do DEVICE_OBJECT (0x60)
+    KDEVICE_QUEUE: {
+        TYPE: 0x00,              // DeviceQueueObject = 20 (0x14)
+        SIZE_FIELD: 0x02,
+        LOCK: 0x08,              // KSPIN_LOCK
+        BUSY: 0x10,              // BOOLEAN
+        ENTRY: 0x18,             // LIST_ENTRY (cabeca da fila de IRPs)
+        SIZE: 0x28,
+        TYPE_DEVICE_QUEUE: 0x14,
+    },
+    // CONTROLLER_OBJECT (wdm.h x64) — serializa acesso a um controlador de
+    // hardware compartilhado (IoAllocateController/IoFreeController)
+    CONTROLLER_OBJECT: {
+        TYPE: 0x00,              // ControllerObject = 7
+        SIZE_FIELD: 0x02,
+        REFERENCE_COUNT: 0x04,
+        CONTROLLER_EXTENSION: 0x08,
+        DEVICE_OBJECT: 0x10,     // quem criou (IoCreateController)
+        // estado interno do jsOS: busy + fila FIFO de pedidos pendentes
+        BUSY: 0x18,              // BOOLEAN (jsOS)
+        QUEUED: 0x1C,            // u32 (jsOS: n de pedidos na fila JS)
+        SIZE: 0x40,
+        TYPE_CONTROLLER: 7,
+    },
+    // CM_RESOURCE_LIST / CM_PARTIAL_RESOURCE_LIST (wdm.h) — recursos do
+    // IRP_MN_START_DEVICE (portas, IRQ) entregues ao driver.
+    // ALINHAMENTO REAL DE 4 BYTES (medido no binario do i8042prt.sys: o loop
+    // do parser anda com stride 0x14 e le a uniao em +4):
+    CM_RESOURCE_LIST: {
+        COUNT: 0x00,             // u32 (n de FULL descriptors)
+        FULL_DESCRIPTOR: 0x04,   // List[1] — alinhamento 4!
+    },
+    CM_FULL_RESOURCE_DESCRIPTOR: {
+        INTERFACE_TYPE: 0x00,    // u32 (Internal=0, Isa=1, PCIBus=5...)
+        BUS_NUMBER: 0x04,
+        PARTIAL_LIST: 0x08,      // CM_PARTIAL_RESOURCE_LIST
+    },
+    CM_PARTIAL_RESOURCE_LIST: {
+        VERSION: 0x00,           // u16
+        REVISION: 0x02,          // u16
+        COUNT: 0x04,             // u32 (n de partial descriptors)
+        DESCRIPTORS: 0x08,
+    },
+    CM_PARTIAL_RESOURCE_DESCRIPTOR: {
+        TYPE: 0x00,              // u8: 1=DeviceSpecific 2=Port 3=Interrupt 4=Memory
+        SHARE_DISPOSITION: 0x01, // u8: 0=Exclusive 1=Shared 2=DeviceExclusive
+        FLAGS: 0x02,             // u16 (interrupt: 1=LevelSensitive,0=Latched...)
+        PORT_START: 0x04,        // PHYSICAL_ADDRESS u64 (Memory/Port)
+        PORT_LENGTH: 0x0C,       // u32
+        INTERRUPT_LEVEL: 0x04,   // u32 (Interrupt)
+        INTERRUPT_VECTOR: 0x08,  // u32
+        INTERRUPT_AFFINITY: 0x0C,// KAFFINITY (u64, alinhamento 4 no x64 real)
+        SIZE: 0x14,              // stride real medido no binario
+        TYPE_PORT: 2,
+        TYPE_INTERRUPT: 3,
+        TYPE_MEMORY: 4,
     },
 };

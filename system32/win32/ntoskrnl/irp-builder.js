@@ -26,7 +26,8 @@ function firstStackLocation(irpAddress, stackCount) {
 // primeiro IofCallDriver: CL/CSL ainda apontam ACIMA do topo.
 function build(address, { major, minor, buffer, bufferLength, deviceObject,
                           power, ioctl, stackCount, fileObject, byteOffset,
-                          userEvent, userIosb, userBuffer, resources }) {
+                          userEvent, userIosb, userBuffer, resources,
+                          relationsType, pnpSlotPointer }) {
     const count = Math.max(1, stackCount || 1);
     for (let i = 0; i < sizeFor(count); i += 4)
         GuestMemory.writeGuest32(address + i, 0);
@@ -69,6 +70,14 @@ function build(address, { major, minor, buffer, bufferLength, deviceObject,
         GuestMemory.writeGuest64(stack + SL.PNP_ALLOCATED_RESOURCES_TRANSLATED,
                                  resources);
     }
+    // IRP_MJ_PNP/QUERY_DEVICE_RELATIONS: Parameters.QueryDeviceRelations.Type
+    if (relationsType !== undefined && relationsType !== null)
+        GuestMemory.writeGuest32(stack + SL.READ_LENGTH, relationsType >>> 0);
+    // ponteiro da uniao Parameters (+0x08) para minors PNP que o exigem:
+    // QUERY_CAPABILITIES (.DeviceCapabilities.Capabilities — buffer OUT) e
+    // FILTER_RESOURCE_REQUIREMENTS (.FilterResourceRequirements.IoResource...)
+    if (pnpSlotPointer)
+        GuestMemory.writeGuest64(stack + SL.READ_LENGTH, pnpSlotPointer);
 }
 
 // le o IoStatus apos a execucao do driver

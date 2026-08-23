@@ -45,6 +45,8 @@ module.exports = {
         'ExQueueWorkItem',                // (itemPtr, queueType)
         'ExAcquireSpinLock',              // (lockPtr, outOldIrqlPtr) legado
         'ExReleaseSpinLock',              // (lockPtr, oldIrql)
+        'ExAcquireFastMutexUnsafe',       // chamador ja esta em contexto APC
+        'ExReleaseFastMutexUnsafe',
     ],
     handlers: [
         // ExAllocatePoolWithTag(poolType, size, tag) -> memoria zerada
@@ -155,5 +157,10 @@ module.exports = {
             Irql.lowerIrql(oldIrql >>> 0);
             return 0;
         },
+        // ExAcquireFastMutexUnsafe(fastMutexPtr): variante que NAO desliga
+        // APCs (o chamador garante o contexto) — mesma aquisicao real
+        (fastMutexPointer) => { FastMutex.acquire(fastMutexPointer); return 0; },
+        // ExReleaseFastMutexUnsafe(fastMutexPtr)
+        (fastMutexPointer) => { FastMutex.release(fastMutexPointer); return 0; },
     ],
 };

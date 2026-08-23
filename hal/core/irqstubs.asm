@@ -271,8 +271,12 @@ irq_common:
     ret
 
 .is_irq:
-    ; IRQ1 (teclado): le o scancode e empilha no ring buffer
+    ; IRQ1 (teclado): le o scancode e empilha no ring buffer — EXCETO quando
+    ; um port driver nativo (i8042prt) conectou o vetor: o ISR nativo e' quem
+    ; le a porta 0x60 (byte de controle em 0x81510, ver ke/interrupt-object.js)
     cmp edi, 0x21
+    jne .no_key
+    cmp byte [0x81510], 0
     jne .no_key
     in al, 0x60
     mov ecx, [KBD_HEAD]

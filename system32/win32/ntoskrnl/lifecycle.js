@@ -160,7 +160,25 @@ function unloadDriver(driverName) {
     return true;
 }
 
+// chama o AddDevice registrado pelo driver (DriverExtension->AddDevice) —
+// o caminho REAL do PnP manager do NT para instanciar um FDO sobre um PDO
+function callAddDevice(driverName, pdoDevicePointer) {
+    const node = ObjectManager.lookup('\\Driver\\' + driverName);
+    if (!node || !node.data.native) return 0xC0000034 | 0;
+    const driverObjectPointer = node.data.driverObjectPointer;
+    const extensionPointer = GuestMemory.readGuest64(
+        driverObjectPointer + DRV.DRIVER_EXTENSION);
+    const addDeviceRoutine = GuestMemory.readGuest64(
+        extensionPointer + NtAbi.DRIVER_EXTENSION.ADD_DEVICE);
+    if (!addDeviceRoutine) return 0xC0000034 | 0;
+    setCurrentDriverNode(node);   // contexto do driver durante o AddDevice
+    const status = os.execMsAbi(addDeviceRoutine, driverObjectPointer,
+                                pdoDevicePointer);
+    endDriver();
+    return status | 0;
+}
+
 module.exports = { beginDriver, endDriver, loadDriver, unloadDriver,
                    getCurrentDriverNode, setCurrentDriverNode, getDriverExport,
                    nodeByDriverObjectPointer, registerReinitialization,
-                   runReinitializationRoutines };
+                   runReinitializationRoutines, callAddDevice };

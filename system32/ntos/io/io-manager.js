@@ -21,11 +21,12 @@ const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
 const NtAbi = require('win32/nt-abi');
 
-// o bus driver (drivers/bus/pci) registra aqui o respondedor PNP de PDOs —
-// quebra o ciclo io-manager<->pci sem require dentro de funcao
-let pdoNativeAnswerer = null;
+// os bus drivers (drivers/bus/pci, motherboard) registram aqui respondedores
+// PNP de PDOs — cadeia: cada um responde so pelos SEUS PDOs (null = nao e'
+// meu); quebra o ciclo io-manager<->bus sem require dentro de funcao
+const pdoNativeAnswerers = [];
 function registerPdoNativeAnswerer(answerFunction) {
-    pdoNativeAnswerer = answerFunction;
+    pdoNativeAnswerers.push(answerFunction);
 }
 
 // Major function codes (subconjunto do NT)
@@ -63,7 +64,9 @@ const IRP_MN = {
     QUERY_INTERFACE: 0x08,
     QUERY_CAPABILITIES: 0x09,
     QUERY_RESOURCES: 0x0A,
+    QUERY_RESOURCE_REQUIREMENTS: 0x0B,
     QUERY_DEVICE_TEXT: 0x0C,
+    FILTER_RESOURCE_REQUIREMENTS: 0x0D,
     QUERY_ID: 0x13,
     QUERY_BUS_INFORMATION: 0x15,
     SURPRISE_REMOVAL: 0x17,
@@ -134,8 +137,8 @@ function iofCallDriver(devicePointer, ioRequestPointer) {
                                                         NtAbi.DEVICE_OBJECT.DRIVER_OBJECT);
     if (!driverObjectPointer) {
         // PDO sem driver nativo: o bus driver (JS) responde (estilo pci.sys)
-        if (pdoNativeAnswerer) {
-            const pnpStatus = pdoNativeAnswerer(devicePointer, ioRequestPointer);
+        for (const answerer of pdoNativeAnswerers) {
+            const pnpStatus = answerer(devicePointer, ioRequestPointer);
             if (pnpStatus !== null) return pnpStatus | 0;
         }
         return STATUS.NOT_SUPPORTED;
@@ -326,6 +329,10 @@ function callNativeDriver(device, ioRequestPacket) {
         stackCount,
         fileObject: fileObjectPointer,
         resources: ioRequestPacket.params.resources,
+        relationsType: ioRequestPacket.params.relationsType ??
+                      ioRequestPacket.params.idType,
+        pnpSlotPointer: ioRequestPacket.params.pnpSlotPointer || 0,
+        userEvent: ioRequestPacket.params.userEvent || 0,
         ioctl: ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL
             ? { code: ioRequestPacket.params.controlCode >>> 0,
                 inputLength: dataLength }
@@ -340,6 +347,16 @@ function callNativeDriver(device, ioRequestPacket) {
         ioRequestPacket.status = guestStatus;             // status pelo retorno
     ioRequestPacket.info = ioStatus.information;
 
+    // STATUS_PENDING: o IRP fica VIVO (o driver completa depois — semantica
+    // real do NT; liberar agora seria use-after-free no iofCompleteRequest)
+    if (guestStatus === 0x103) {
+        ioRequestPacket.pendingIrpAddress = irpAddress;
+        ioRequestPacket.pendingBufferAddress = bufferAddress;
+        if (transientFileObject)
+            ioRequestPacket.pendingFileObjectPointer = fileObjectPointer;
+        return ioRequestPacket;
+    }
+
     if ((ioRequestPacket.major === IRP_MJ.READ ||
          ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL) &&
         ioRequestPacket.info > 0) {
@@ -353,6 +370,44 @@ function callNativeDriver(device, ioRequestPacket) {
     if (bufferAddress) GuestMemory.guestFreeBytes(bufferAddress);
     if (transientFileObject) GuestMemory.guestFreeBytes(fileObjectPointer);
     return ioRequestPacket;
+}
+
+// finaliza um IRP que ficou PENDENTE: espera o evento, le o status final e
+// libera a memoria (o papel do chamador sincrono no NT)
+function waitPendingIoRequest(ioRequestPacket, timeoutMs) {
+    if (!ioRequestPacket.pendingIrpAddress) return ioRequestPacket.status;
+    const eventPointer = ioRequestPacket.params.userEvent;
+    let timeoutPointer = 0;
+    if (timeoutMs) {
+        timeoutPointer = GuestMemory.guestAllocBytes(8);
+        const negative = -(timeoutMs * 10000);
+        GuestMemory.writeGuest32(timeoutPointer, negative >>> 0);
+        GuestMemory.writeGuest32(timeoutPointer + 4,
+                                 Math.floor(negative / 0x100000000) >>> 0);
+    }
+    const waitStatus = Dispatcher.waitForSingleObject(eventPointer,
+                                                      timeoutPointer);
+    if (timeoutPointer) GuestMemory.guestFreeBytes(timeoutPointer);
+    if (waitStatus !== 0) {
+        os.debugPrint('[iom] IRP pendente NAO completou (timeout ' +
+                      timeoutMs + 'ms) irp=0x' +
+                      ioRequestPacket.pendingIrpAddress.toString(16));
+        ioRequestPacket.status = 0x102;   // STATUS_TIMEOUT p/ o chamador
+    } else {
+        const finalStatus = IrpBuilder.readIoStatus(
+            ioRequestPacket.pendingIrpAddress);
+        ioRequestPacket.status = finalStatus.status;
+        ioRequestPacket.info = finalStatus.information;
+    }
+    GuestMemory.guestFreeBytes(ioRequestPacket.pendingIrpAddress);
+    if (ioRequestPacket.pendingBufferAddress)
+        GuestMemory.guestFreeBytes(ioRequestPacket.pendingBufferAddress);
+    if (ioRequestPacket.pendingFileObjectPointer)
+        GuestMemory.guestFreeBytes(ioRequestPacket.pendingFileObjectPointer);
+    delete ioRequestPacket.pendingIrpAddress;
+    delete ioRequestPacket.pendingBufferAddress;
+    delete ioRequestPacket.pendingFileObjectPointer;
+    return ioRequestPacket.status;
 }
 
 // ---- abertura/fechamento real: IRP_MJ_CREATE / IRP_MJ_CLOSE ----------------
@@ -446,7 +501,8 @@ function callDriver(devicePath, ioRequestPacket) {
         return ioRequestPacket;
     }
     const driver = device.data.driver;
-    if ((driver && driver.data.native) || device.data.stackTopPointer)
+    if ((driver && driver.data.native) || device.data.stackTopPointer ||
+        (device.data.nativeDevicePointer && !driver))
         return callNativeDriver(device, ioRequestPacket);
     if (!driver) {
         ioRequestPacket.status = STATUS.NOT_SUPPORTED;
@@ -475,11 +531,19 @@ function deviceControl(devicePath, controlCode, parameters) {
 
 // PnP: manda IRP_MJ_PNP / IRP_MN_START_DEVICE ao device (com os recursos de
 // hardware em Parameters.StartDevice.AllocatedResources quando existem) e
-// marca o resultado
+// marca o resultado. Semantica real do NT: se o driver retorna
+// STATUS_PENDING, o PnP manager ESPERA o KEVENT do IRP (o driver completa
+// assincrono — ex: i8042prt faz o self-test do 8042 com stalls de hardware).
 function pnpStartDevice(device) {
+    const eventPointer = GuestMemory.guestAllocBytes(0x18);  // KEVENT
+    Dispatcher.initializeEvent(eventPointer, 1, 0);          // SynchronizationEvent
     const ioRequest = makeIoRequest(IRP_MJ.PNP, { minor: IRP_MN.START_DEVICE,
-                                                  resources: device.data.resources || 0 });
+                                                  resources: device.data.resources || 0,
+                                                  userEvent: eventPointer });
     callDriver('\\Device\\' + device.name, ioRequest);
+    if (ioRequest.status === 0x103)                          // STATUS_PENDING:
+        waitPendingIoRequest(ioRequest, 10000);              // espera a conclusao
+    GuestMemory.guestFreeBytes(eventPointer);
     device.data.pnpStarted = ioRequest.status === STATUS.SUCCESS;
     return ioRequest.status;
 }
@@ -554,4 +618,5 @@ module.exports = { IRP_MJ, IRP_MN, STATUS, makeIoRequest, init, createDriver,
                    getDevicePowerState, dispatchNativePowerIrp,
                    iofCallDriver, iofCompleteRequest,
                    buildSynchronousFsdRequest, buildDeviceIoControlRequest,
+                   waitPendingIoRequest,
                    pnpRemoveDevice, queryDeviceId, registerPdoNativeAnswerer };

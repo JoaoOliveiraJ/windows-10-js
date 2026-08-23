@@ -82,6 +82,27 @@ function init() {
     seedService('pcidemo',   'pcidemo.sys',   1, 'PCI\\VEN_1234&DEV_1111');
     // Start=3 (demand): carregado sob demanda via ZwLoadDriver (loader.sys)
     seedService('ondemand',  'lifecycle.sys', 3);
+    // i8042prt: servico demand (o selftest carrega) + a subchave Parameters
+    // como no Windows real (o driver le os defaults de la no DriverEntry)
+    seedService('i8042prt',  'i8042prt.sys',  3);
+    seedServiceParameters('i8042prt', [
+        ['KeyboardDataQueueSize', 4, dwordBytes(0x64)],
+        ['MouseDataQueueSize',    4, dwordBytes(0x64)],
+        ['PollStatusIterations',  4, dwordBytes(0x2000)],
+        ['PollingIterations',     4, dwordBytes(0x1900)],
+        ['ResendIterations',      4, dwordBytes(3)],
+        ['OverrideKeyboardType',  4, dwordBytes(0)],
+        ['CrashOnCtrlScroll',     4, dwordBytes(0)],
+    ]);
+}
+
+// Parameters de um servico (subchave Parameters, como o INF criaria)
+function seedServiceParameters(name, entries) {
+    const handle = Registry.openOrCreate(
+        '\\Registry\\Machine\\System\\Services\\' + name + '\\Parameters');
+    for (const [valueName, type, data] of entries)
+        Registry.setValue(handle, valueName, type, data);
+    Registry.closeHandle(handle);
 }
 
 module.exports = { init };

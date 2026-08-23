@@ -30,6 +30,7 @@ module.exports = {
         'MmGetSystemRoutineAddress',
         'MmMapLockedPagesSpecifyCache',
         'MmUnmapLockedPages',
+        'MmMapIoSpaceEx',                  // (physAddr, size, protect) -> VA
     ],
     handlers: [
         // MmAllocateNonCachedMemory(size) -> memoria fisica zerada
@@ -94,6 +95,10 @@ module.exports = {
                 ~MDL.FLAG_MAPPED_TO_SYSTEM_VA);
             return 0;
         },
+        // MmMapIoSpaceEx(physAddr u64, size, protect) -> VA: nosso mapa e'
+        // identidade 1:1 nas regioes de MMIO — a VA retornada e' o proprio
+        // endereco fisico (como um NT com tudo mapeado)
+        (physicalAddress, _size, _protect) => physicalAddress,
     ],
     registerRoutineLookup,
 };

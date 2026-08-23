@@ -164,6 +164,8 @@ module.exports = {
         'RtlQueryRegistryValues',
         'RtlQueryRegistryValuesEx',
         '_vsnwprintf',
+        '_wcsupr',                         // uppercase wide in-place
+        '__C_specific_handler',            // despachante SEH da CRT
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer.
@@ -624,6 +626,31 @@ module.exports = {
             if (bufferChars > 0)
                 GuestMemory.writeGuest16(bufferPointer + writable * 2, 0);
             return writable;
+        },
+        // _wcsupr(wstrPtr): uppercase in-place (mapeamento 1:1 por wchar,
+        // como o CRT do Windows — sem expansao tipo ss<-ß)
+        (wideStringPointer) => {
+            let cursor = wideStringPointer >>> 0;
+            for (;;) {
+                const unit = GuestMemory.readGuest16(cursor);
+                if (unit === 0) break;
+                const upper = String.fromCharCode(unit).toUpperCase();
+                GuestMemory.writeGuest16(cursor, upper.charCodeAt(0));
+                cursor += 2;
+            }
+            return wideStringPointer;
+        },
+        // __C_specific_handler: o despachante SEH da CRT — so e' chamado se
+        // uma excecao estruturada ocorre dentro do driver. Sem frames SEH
+        // registrados, o desfecho real no NT e' KMODE_EXCEPTION_NOT_HANDLED.
+        (exceptionRecordPointer, _establisherFrame, _contextRecordPointer,
+         _dispatcherContext) => {
+            const exceptionCode = exceptionRecordPointer
+                ? GuestMemory.readGuest32(exceptionRecordPointer) : 0;
+            os.debugPrint('[seh] excecao 0x' + (exceptionCode >>> 0).toString(16) +
+                          ' em codigo de driver sem tratamento — bugcheck');
+            os.halt();
+            return 0;
         },
     ],
 };

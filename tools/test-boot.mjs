@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const marker = process.argv[2] || 'HELLO_UEFI_OK';
 const timeoutMs = Number(process.argv[3] || 45000);
+const dumpLog = process.argv.includes('--dump');   // imprime o serial no PASS
 
 const qemu = process.env.QEMU || 'C:/Program Files/qemu/qemu-system-x86_64.exe';
 
@@ -57,6 +58,7 @@ let res = await tryBoot(['-accel', 'whpx']);
 
 if (res.ok) {
     console.log(`PASS: marcador "${marker}" recebido no serial.`);
+    if (dumpLog) console.log(res.out);
     process.exit(0);
 } else {
     console.error(`FAIL (${res.reason}): marcador "${marker}" nao recebido.`);

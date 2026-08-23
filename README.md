@@ -250,34 +250,42 @@ já roda com `-smp 4`: se o WHPX for corrigido, tudo liga sozinho.
 
 ## E drivers .sys do Windows? Carrega de verdade
 
-**Sim — o jsOS carrega um driver binário da Microsoft**: o `kbdclass.sys` do
-próprio Windows 10/11 (copiado de `C:\Windows\System32\drivers` no build —
-não fica no repo) passa pelo nosso loader PE e tem seu `DriverEntry`
-executado até o fim, coberto pelo autoteste.
+**Sim — o jsOS carrega binários da Microsoft**: o `kbdclass.sys` e o
+`i8042prt.sys` do próprio Windows 10/11 (copiados de
+`C:\Windows\System32\drivers` no build — não ficam no repo) passam pelo nosso
+loader PE e executam de verdade:
+
+- **kbdclass.sys**: `DriverEntry` completo, coberto pelo autoteste.
+- **i8042prt.sys** (port driver PS/2): `DriverEntry` + `AddDevice` PnP sobre
+  os PDOs do 8042 (PNP0303/PNP0F13, criados pelo bus da placa-mãe com a
+  CM_RESOURCE_LIST real: portas 0x60/0x64 + IRQ1/IRQ12), e o fluxo de queries
+  PnP (capabilities/requirements/filter). O driver **sonda o 8042 emulado do
+  QEMU de verdade** (reset, scancode set 2, enable scanning — visível no
+  trace `ps2*` do QEMU). O START final ainda esbarra numa pré-condição
+  interna do binário (a extensão de porta compartilhada, extensão+0x1B8) que
+  estamos mapeando por RE do binário.
 
 Para chegar aqui foi preciso, em JS:
 
-- **Relocação PE completa** (`.reloc` DIR64/HIGHLOW/HIGH): a ImageBase
-  preferida (`0x1c0000000`) está fora do nosso identity map, então a imagem é
-  realocada para um slot livre e todos os fixups aplicados.
-- **Semente do GS cookie**: o Windows inicializa o `__security_cookie` com
-  entropia no load; o loader varre a imagem e troca o default do linker
-  (`0x2B992DDFA232`) por um valor do TSC — senão o `__fastfail` (int 0x29)
-  dispara na primeira função com `/GS`.
-- **~270 exports do ntoskrnl/HAL/wmilib/WppRecorder implementados em JS**
-  (`system32/win32/ntoskrnl/*.js`, agrupados por subsistema): o `DriverEntry`
-  do kbdclass chama de `MmGetSystemRoutineAddress` a `EtwRegister`,
-  `WppAutoLogStart`, `IoWMIRegistrationControl`, `RtlWriteRegistryValue`,
-  `ExAllocatePoolWithTag`, spinlocks, remove locks, etc.
-- **Registry real**: o driver lê/escreve `\Registry\Machine\System\Services`
-  via `RtlWriteRegistryValue`/`RtlQueryRegistryValues` e `Zw*Key`.
+- **Relocação PE completa** (`.reloc` DIR64/HIGHLOW/HIGH) + **semente do GS
+  cookie** via `IMAGE_LOAD_CONFIG_DIRECTORY.SecurityCookie` (como o loader do
+  Windows).
+- **~290 exports do ntoskrnl/HAL/wmilib/WppRecorder implementados em JS**
+  (`system32/win32/ntoskrnl/*.js`): de `MmGetSystemRoutineAddress` a
+  `EtwRegister`, `IoConnectInterrupt` (KINTERRUPT real — o ISR nativo do
+  driver é chamado quando a IRQ dispara), `IoCreateController`/
+  `IoAllocateController` (serialização real com fila FIFO), `IoStartPacket`
+  (modelo StartIo com KDEVICE_QUEUE ordenada), `KeSynchronizeExecution`,
+  `IoQueryDeviceDescription`, a família `Kd*` (estado real "sem debugger")...
+- **Registry real**: os drivers leem/escrevem
+  `\Registry\Machine\System\Services` via `RtlQueryRegistryValues` e `Zw*Key`.
 
 Detalhe de ABI que importa: argumentos 5+ chegam pela pilha e o chamador só
 garante os 32 bits baixos de um `ULONG` — todo handler mascara com `>>> 0`
-antes de usar tamanho/offset (uma leitura de `dataSize` sem máscara virava um
-loop de bilhões de iterações; bug caçado com guardas de heap no shim C e
-resolvido contra o mapa de símbolos do kernel.elf via
-`tools/resolve-symbols.py`).
+antes de usar tamanho/offset (bug caçado com guardas de heap no shim C e
+resolvido contra o mapa de símbolos via `tools/resolve-symbols.py`). Outro:
+a `CM_PARTIAL_RESOURCE_DESCRIPTOR` tem alinhamento de **4 bytes** no x64 real
+(stride 0x14 — medido no parser do próprio i8042prt, não em documentação).
 
 O jsOS também tem seu próprio modelo de drivers **em JavaScript**
 (`system32/drivers/video/vga.js`, `input/keyboard.js` são drivers de verdade,

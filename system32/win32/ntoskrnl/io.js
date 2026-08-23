@@ -20,6 +20,9 @@ const PciBus = require('drivers/bus/pci');
 const Registry = require('ntos/cm/registry');
 const Dispatcher = require('ntos/ke/dispatcher');
 const Irql = require('ntos/ke/irql');
+const InterruptObject = require('ntos/ke/interrupt-object');
+const Controller = require('ntos/io/controller');
+const StartIo = require('ntos/io/start-io');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -30,6 +33,10 @@ const driverExtensions = new Map();
 // mapa FDO -> PDO registrado no attach (para IoGetDeviceProperty achar o
 // PDO de hardware de qualquer ponto da pilha)
 const pdoOfAttachedDevice = new Map();
+
+// devices com estado invalidado via IoInvalidateDeviceState (sinalizacao
+// PnP real — o NT agenda um QUERY_DEVICE_STATE nesse ponto)
+const invalidatedDevices = new Set();
 
 // spinlock global de cancelamento (IoAcquire/ReleaseCancelSpinLock)
 let cancelSpinLockPointer = 0;
@@ -49,9 +56,14 @@ const REMOVE_LOCK = { REMOVED: 0, IO_COUNT: 4, WAIT_EVENT: 0x10 };
 
 // cria um DEVICE_OBJECT real no namespace + encadeado na lista do driver.
 // A DeviceExtension (se pedida) fica logo apos o DEVICE_OBJECT, como o NT faz.
+// devices sem nome (IoCreateDevice com DeviceName NULL): no NT o objeto
+// simplesmente nao entra no namespace — aqui recebem um nome interno unico
+let unnamedDeviceCounter = 0;
+
 function createDevice(driverObjectPointer, extensionSize, deviceName, deviceType,
                       characteristics, outputPointer) {
-    const shortName = deviceName ? deviceName.replace(/^\\Device\\/i, '') : 'Unnamed';
+    const shortName = deviceName ? deviceName.replace(/^\\Device\\/i, '')
+                                 : 'Unnamed' + (unnamedDeviceCounter++);
     const devicePage = GuestMemory.guestAllocBytes(DEVICE.STRUCT_SIZE + extensionSize);
 
     GuestMemory.writeGuest16(devicePage + DEVICE.TYPE, DEVICE.IO_TYPE);
@@ -234,6 +246,18 @@ module.exports = {
         'IoRegisterDriverReinitialization',
         'IoOpenDeviceRegistryKey',
         'IoWMIRegistrationControl',
+        'IoConnectInterrupt',              // KINTERRUPT + ISR nativa no vetor
+        'IoDisconnectInterrupt',
+        'IoCreateController',              // CONTROLLER_OBJECT (serializacao)
+        'IoDeleteController',
+        'IoAllocateController',
+        'IoFreeController',
+        'IoStartPacket',                   // modelo StartIo (fila por device)
+        'IoStartNextPacket',
+        'IoSetStartIoAttributes',
+        'IoGetAttachedDeviceReference',    // topo da cadeia + referencia
+        'IoInvalidateDeviceState',         // PnP: re-avaliar o estado do device
+        'IoQueryDeviceDescription',        // legado: \Hardware\Description
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -641,5 +665,85 @@ module.exports = {
                 wmiRegisteredDevices.delete(devicePointer >>> 0);
             return 0;
         },
+        // IoConnectInterrupt(outKiPtr, isr, context, spinlock, vector, irql,
+        //                    syncIrql, mode, shareable, affinity, floatSave):
+        // cria o KINTERRUPT e liga o ISR nativo ao vetor (ntos/ke/interrupt-
+        // object.js) — args 5+ vem da pilha, ja mascarados la dentro
+        (outInterruptPointer, serviceRoutine, serviceContext, spinLockPointer,
+         vector, irql, synchronizeIrql, interruptMode, shareVector, affinity,
+         floatingSave) =>
+            InterruptObject.ioConnectInterrupt(
+                outInterruptPointer, serviceRoutine, serviceContext,
+                spinLockPointer, vector, irql, synchronizeIrql, interruptMode,
+                shareVector, affinity, floatingSave),
+        // IoDisconnectInterrupt(ki): desliga e libera
+        (kinterruptPointer) => {
+            InterruptObject.ioDisconnectInterrupt(kinterruptPointer >>> 0);
+            return 0;
+        },
+        // IoCreateController(sizeExtension) -> CONTROLLER_OBJECT
+        (extensionSize) => Controller.ioCreateController(extensionSize),
+        // IoDeleteController(controller)
+        (controllerPointer) => {
+            Controller.ioDeleteController(controllerPointer >>> 0);
+            return 0;
+        },
+        // IoAllocateController(controller, device, routine, context):
+        // serializa o acesso ao controlador (fila FIFO quando ocupado)
+        (controllerPointer, deviceObjectPointer, routinePointer,
+         contextPointer) => {
+            Controller.ioAllocateController(controllerPointer >>> 0,
+                deviceObjectPointer, routinePointer, contextPointer);
+            return 0;
+        },
+        // IoFreeController(controller): libera e dispara o proximo
+        (controllerPointer) => {
+            Controller.ioFreeController(controllerPointer >>> 0);
+            return 0;
+        },
+        // IoStartPacket(device, irp, keyPtr, cancelRoutine): StartIo real
+        (devicePointer, irpPointer, sortKeyPointer, cancelRoutine) => {
+            StartIo.ioStartPacket(devicePointer >>> 0, irpPointer,
+                                  sortKeyPointer, cancelRoutine);
+            return 0;
+        },
+        // IoStartNextPacket(device, cancelable)
+        (devicePointer, cancelable) => {
+            StartIo.ioStartNextPacket(devicePointer >>> 0, cancelable);
+            return 0;
+        },
+        // IoSetStartIoAttributes(device, deferredStart, serialAccess)
+        (devicePointer, deferredStartIo, serialAccess) => {
+            StartIo.ioSetStartIoAttributes(devicePointer >>> 0,
+                                           deferredStartIo, serialAccess);
+            return 0;
+        },
+        // IoGetAttachedDeviceReference(devicePtr) -> topo da cadeia
+        // AttachedDevice com a ReferenceCount incrementada (como o NT)
+        (devicePointer) => {
+            let topPointer = devicePointer >>> 0;
+            for (;;) {
+                const attached = GuestMemory.readGuest32(topPointer +
+                    DEVICE.ATTACHED_DEVICE);
+                if (!attached) break;
+                topPointer = attached;
+            }
+            GuestMemory.writeGuest32(topPointer + DEVICE.REFERENCE_COUNT,
+                GuestMemory.readGuest32(topPointer + DEVICE.REFERENCE_COUNT) + 1);
+            return topPointer;
+        },
+        // IoInvalidateDeviceState(pdo): o NT sinaliza o PnP p/ re-avaliar o
+        // device (QUERY_DEVICE_STATE). Registramos a invalidacao de verdade —
+        // o conjunto e' consultado pelo fluxo PnP quando o estado muda.
+        (devicePointer) => {
+            invalidatedDevices.add(devicePointer >>> 0);
+            return 0;
+        },
+        // IoQueryDeviceDescription(busType, busNumber, ...): busca legada em
+        // \Registry\Machine\Hardware\Description — nao povoada no nosso boot
+        // (sem EISA/MCA; o 8042 chega por PnP) -> OBJECT_NAME_NOT_FOUND real
+        (_busTypePointer, _busNumberPointer, _controllerTypePointer,
+         _controllerNumberPointer, _peripheralTypePointer,
+         _peripheralNumberPointer) => 0xC0000034 | 0,
     ],
 };

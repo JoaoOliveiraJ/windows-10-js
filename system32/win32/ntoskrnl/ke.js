@@ -14,6 +14,7 @@ const Smp = require('ntos/ke/smp');
 const NtAbi = require('win32/nt-abi');
 const GuestMemory = require('win32/guest-memory');
 const GuestStrings = require('win32/guest-strings');
+const InterruptObject = require('ntos/ke/interrupt-object');
 
 // spin lock real: test-and-set ate estar livre; retorna o IRQL antigo
 function acquireSpinLock(pointer) {
@@ -95,6 +96,10 @@ module.exports = {
         'KeAcquireSpinLockAtDpcLevel',     // adquire SEM subir IRQL (ja em DPC)
         'KeReleaseSpinLockFromDpcLevel',   // libera SEM descer IRQL
         'PsGetVersion',                    // (outMajor, outMinor, outBuild, suffix)
+        'KfRaiseIrql',                     // (newIrql) -> IRQL antigo
+        'KeQueryTimeIncrement',            // incremento do tick em 100ns
+        'KeQueryDpcWatchdogInformation',   // (outInfoPtr)
+        'KeSynchronizeExecution',          // (ki, routine, context) c/ lock
     ],
     handlers: [
         // DbgPrint(formatPtr, args...): printf real do kernel — formata
@@ -344,5 +349,26 @@ module.exports = {
             if (suffixPointer) GuestMemory.writeGuest32(suffixPointer, 0);
             return 1;
         },
+        // KfRaiseIrql(newIrql) -> IRQL antigo (nome real do KeRaiseIrql)
+        (newIrql) => {
+            const oldIrql = Irql.getIrql();
+            Irql.raiseIrql(newIrql & 0xFF);
+            return oldIrql;
+        },
+        // KeQueryTimeIncrement() -> u32: incremento do relogio em 100ns —
+        // nosso quantum real do LAPIC timer (100 Hz = 10 ms = 100000x100ns)
+        () => 100000,
+        // KeQueryDpcWatchdogInformation(outPtr): nosso kernel nao roda o
+        // watchdog de DPC — a struct sai zerada (estado real: nao configurado)
+        (infoPointer) => {
+            for (let i = 0; i < 0x50; i += 4)
+                GuestMemory.writeGuest32(infoPointer + i, 0);
+            return 0;
+        },
+        // KeSynchronizeExecution(ki, syncRoutine, context): roda a rotina
+        // com o ActualLock segurado no SynchronizeIrql (exclusao com o ISR)
+        (kinterruptPointer, syncRoutinePointer, contextPointer) =>
+            InterruptObject.keSynchronizeExecution(kinterruptPointer >>> 0,
+                syncRoutinePointer, contextPointer),
     ],
 };

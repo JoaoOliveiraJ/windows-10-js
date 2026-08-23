@@ -206,6 +206,18 @@ if (existsSync(windowsDriverSource)) {
     console.log('AVISO: kbdclass.sys nao encontrado no Windows desta maquina');
 }
 
+/* 0b3. i8042prt.sys: o PORT driver de teclado/mouse PS/2 da Microsoft —
+ * fala com o 8042 real (portas 0x60/0x64), IRQ1/IRQ12 nativas. */
+const i8042DriverSource = 'C:/Windows/System32/drivers/i8042prt.sys';
+if (existsSync(i8042DriverSource)) {
+    const i8042Target = path.join(buildDir, 'i8042prt.sys');
+    writeFileSync(i8042Target, readFileSync(i8042DriverSource));
+    builtDrivers.push({ name: 'apps/i8042prt.sys', file: i8042Target });
+    console.log('driver Microsoft i8042prt.sys incluido (binario do sistema)');
+} else {
+    console.log('AVISO: i8042prt.sys nao encontrado no Windows desta maquina');
+}
+
 /* 0c. trampolim de AP (SMP): modo real -> 64 bits; o JS copia p/ 0x9000 no
  * boot e dispara INIT-SIPI-SIPI pelo LAPIC (ver system32/ntos/ke/smp.js) */
 const bootArtifacts = [];
