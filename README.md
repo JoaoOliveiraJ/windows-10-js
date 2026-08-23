@@ -255,15 +255,26 @@ já roda com `-smp 4`: se o WHPX for corrigido, tudo liga sozinho.
 `C:\Windows\System32\drivers` no build — não ficam no repo) passam pelo nosso
 loader PE e executam de verdade:
 
-- **kbdclass.sys**: `DriverEntry` completo, coberto pelo autoteste.
+- **kbdclass.sys**: `DriverEntry` completo + `AddDevice` (anexa como **filtro
+  de classe** sobre o FDO do i8042prt e **CONECTA a porta ali mesmo**, via
+  `IOCTL_INTERNAL_KEYBOARD_CONNECT`) + cria `\Device\KeyboardClass0` — coberto
+  pelo autoteste.
 - **i8042prt.sys** (port driver PS/2): `DriverEntry` + `AddDevice` PnP sobre
   os PDOs do 8042 (PNP0303/PNP0F13, criados pelo bus da placa-mãe com a
-  CM_RESOURCE_LIST real: portas 0x60/0x64 + IRQ1/IRQ12), e o fluxo de queries
-  PnP (capabilities/requirements/filter). O driver **sonda o 8042 emulado do
-  QEMU de verdade** (reset, scancode set 2, enable scanning — visível no
-  trace `ps2*` do QEMU). O START final ainda esbarra numa pré-condição
-  interna do binário (a extensão de porta compartilhada, extensão+0x1B8) que
-  estamos mapeando por RE do binário.
+  CM_RESOURCE_LIST real: portas 0x60/0x64 + IRQ1/IRQ12), queries PnP
+  (capabilities/requirements/filter) e **START_DEVICE retorna 0 de verdade**:
+  o driver sonda o 8042 do QEMU e **conecta sua ISR nativa à IRQ1**
+  (`IoConnectInterrupt` num KINTERRUPT real — quando a tecla dispara a IRQ1, a
+  ISR do i8042prt roda e lê o scancode da porta 0x60). A cadeia completa de
+  entrega (ISR → ring → DPC → callback do kbdclass → READ) está sendo
+  finalizada (o kbdclass abre a porta e lê de `\Device\KeyboardClass0`).
+
+A pilha PnP real: o orquestrador (`system32/ntos/io/pnp.js`) monta o devnode
+como o PnP Manager do NT — driver funcional (i8042prt) **mais os filtros de
+classe lidos do Registry** (`...\Control\Class\{Keyboard}\UpperFilters =
+kbdclass`), e o `START_DEVICE` vai ao **topo da pilha** (o kbdclass encaminha
+para baixo). O mouse fica sem `mouclass.sys` (devnode com problema, o boot
+segue — como um PC sem o driver).
 
 Para chegar aqui foi preciso, em JS:
 
@@ -301,7 +312,13 @@ build (única dependência de toolchain, portátil).
 node tools\build.mjs        :: compila tudo e gera build\os.img
 tools\run.bat               :: boot interativo (janela VGA, aceleração WHPX)
 node tools\test-boot.mjs    :: boot headless; PASS se SELFTEST_OK no serial
+node tools\test-keyboard.mjs:: boot + injeção de tecla via QMP (driver real)
+node tools\run-kbd.mjs      :: boot interativo p/ DIGITAR (eco do kbdclass)
 ```
+
+`run-kbd.mjs` abre o QEMU com janela: o que você digita nela atravessa
+8042 → IRQ1 → ISR do i8042prt → DPC → callback do kbdclass, e cada tecla sai
+no serial como `[kbdecho] MakeCode=0x..`.
 
 O teste headless sobe a VM, o kernel JS roda o autoteste (VFS, syscalls,
 execução de programa do VFS, escalonador) e imprime `SELFTEST_OK` na serial.
@@ -332,8 +349,9 @@ execução de programa do VFS, escalonador) e imprime `SELFTEST_OK` na serial.
   IRQ1 de teclado por interrupção de verdade e **LAPIC timer a 100 Hz** com
   dispatch estilo NT (o stub asm só conta o evento; o handler JS roda no
   dispatch de IRQs pendentes — modelo ISR→DPC)
-- Port driver de teclado (i8042prt-like) alimentando o kbdclass.sys via
-  IOCTL_INTERNAL_KEYBOARD_CONNECT
+- ~~kbdclass conecta no i8042prt~~ ✅ feito: `IOCTL_INTERNAL_KEYBOARD_CONNECT`
+  real, START do i8042 retorna 0, ISR nativa na IRQ1. Falta: a última milha
+  da entrega do scancode ao `\Device\KeyboardClass0` (DPC → callback → READ)
 - Persistência: escrita no disco ATA + NTFS com escrita
 - Preempção de threads JS pelo quantum do LAPIC timer
 - Modo gráfico (VBE/framebuffer) e desktop em JS
