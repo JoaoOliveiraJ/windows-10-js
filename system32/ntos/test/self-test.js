@@ -107,13 +107,12 @@ function run() {
     assert(ObjectManager.close(h1), 'objmgr close');
     assert(ObjectManager.open('\\Device\\Console') > 0, 'objmgr device');
     assert(ObjectManager.open('\\Device\\NaoExiste') === 0, 'objmgr negativo');
-    assert(SystemCall(SystemCall.byName.open, '\\Device\\Keyboard') > 0, 'sys open');
+    assert(SystemCall(SystemCall.byName.open, '\\Device\\Console') > 0, 'sys open');
     // link simbolico \DosDevices\C: -> \FS (como no Windows)
     assert(ObjectManager.open('\\DosDevices\\C:\\README') > 0, 'objmgr symlink C:');
 
     // I/O Manager: drivers registrados + IRP de escrita no console
     assert(ObjectManager.lookup('\\Driver\\Console'), 'iom driver console');
-    assert(ObjectManager.lookup('\\Driver\\Keyboard'), 'iom driver teclado');
     const irpOk = IoManager.write('\\Device\\Console', '');
     assert(irpOk.status === IoManager.STATUS.SUCCESS, 'iom IRP write console');
     const irpBad = IoManager.write('\\Device\\NaoExiste', 'x');

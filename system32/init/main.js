@@ -50,12 +50,59 @@ function banner() {
     Console.print('=================================================');
 }
 
-// servico de teclado: processo que le o driver e publica no canal 'kbd'
-// (fluxo nanokernel: driver -> IPC -> consumidor)
+// servico de teclado: processo que le do device de classe REAL do kbdclass
+// (\Device\KeyboardClass0, alimentado pelo i8042prt.sys da Microsoft) e
+// publica os chars no canal 'kbd' (fluxo nanokernel: driver -> IPC -> shell).
+// Um READ fica pendente; a tecla atravessa IRQ1->ISR->DPC->callback e o
+// completa — o processo so rende e a main loop despacha IRQ/DPC entre ticks.
 function* KbdService() {
+    const IoManager = require('ntos/io/io-manager');
+    const Dispatcher = require('ntos/ke/dispatcher');
+    const GuestMemory = require('win32/guest-memory');
+    const decodeKey = Keyboard.decode;
+    // a porta i8042 ja esta aberta (o selftest a abriu — open count != 0)
+    const kbd = IoManager.openDevice('\\Device\\KeyboardClass0');
+    if (kbd.status !== 0) { os.debugPrint('[kbd] KeyboardClass0 indisponivel'); return; }
+    os.debugPrint('[kbd] lendo teclas do driver real (i8042prt+kbdclass)');
+    const eventPointer = GuestMemory.guestAllocBytes(0x18);
+    let pendingRead = null;
+    // despeja KEYBOARD_INPUT_DATA -> ASCII -> canal 'kbd'
+    const pumpData = (dataPointer, info) => {
+        for (let off = 0; off + 12 <= info; off += 12) {
+            const makeCode = GuestMemory.readGuest16(dataPointer + off + 2);
+            const flags = GuestMemory.readGuest16(dataPointer + off + 4);
+            const scancode = (flags & 1) ? (makeCode | 0x80) : makeCode;
+            const ch = decodeKey(scancode);
+            if (ch !== null) MessageChannels.send('kbd', ch);
+        }
+    };
     for (;;) {
-        const k = Keyboard.pollKey();
-        if (k !== null) MessageChannels.send('kbd', k);
+        if (!pendingRead) {
+            Dispatcher.initializeEvent(eventPointer, 0, 0);
+            const readRequest = IoManager.readHandle(kbd.handle, {
+                userEvent: eventPointer, bufferLength: 48,
+            });
+            if (readRequest.status === 0 && readRequest.info > 0) {
+                // dados ja na fila: result tem os bytes como string
+                const text = readRequest.result;
+                for (let off = 0; off + 12 <= readRequest.info; off += 12) {
+                    const makeCode = text.charCodeAt(off + 2) | (text.charCodeAt(off + 3) << 8);
+                    const flags = text.charCodeAt(off + 4);
+                    const ch = decodeKey((flags & 1) ? (makeCode | 0x80) : makeCode);
+                    if (ch !== null) MessageChannels.send('kbd', ch);
+                }
+            } else if (readRequest.status === 0x103) {
+                pendingRead = readRequest;
+            }
+        } else if (Dispatcher.waitForSingleObject(eventPointer, 0) === 0) {
+            // o READ completou: le os dados ANTES de liberar
+            const dataPointer = pendingRead.pendingBufferAddress;
+            const info = GuestMemory.readGuest64(pendingRead.pendingIrpAddress +
+                                                 0x38 /* IoStatus.Information */);
+            pumpData(dataPointer, info);
+            IoManager.waitPendingIoRequest(pendingRead, 0);
+            pendingRead = null;
+        }
         yield;
     }
 }

@@ -74,4 +74,4 @@ function DriverEntry(IoManager) {
     return true;
 }
 
-module.exports = { readKey, pollKey, DriverEntry };
+module.exports = { readKey, pollKey, DriverEntry, decode };
