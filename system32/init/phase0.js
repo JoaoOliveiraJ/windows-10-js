@@ -114,6 +114,7 @@ function init() {
     // kbdclass/mouclass: filtros de classe (upper filters), carregados quando
     // o PnP casa um devnode da classe Keyboard/Mouse — como o NT faz
     seedService('kbdclass',  'kbdclass.sys',  3);
+    seedService('mouclass',  'mouclass.sys',  3);
     seedServiceParameters('i8042prt', [
         ['KeyboardDataQueueSize', 4, dwordBytes(0x64)],
         ['MouseDataQueueSize',    4, dwordBytes(0x64)],

@@ -218,6 +218,18 @@ if (existsSync(i8042DriverSource)) {
     console.log('AVISO: i8042prt.sys nao encontrado no Windows desta maquina');
 }
 
+/* 0b4. mouclass.sys: o driver de CLASSE de mouse da Microsoft (filtro sobre a
+ * porta de mouse do i8042prt) — espelha o caminho do kbdclass. */
+const mouclassDriverSource = 'C:/Windows/System32/drivers/mouclass.sys';
+if (existsSync(mouclassDriverSource)) {
+    const mouclassTarget = path.join(buildDir, 'mouclass.sys');
+    writeFileSync(mouclassTarget, readFileSync(mouclassDriverSource));
+    builtDrivers.push({ name: 'apps/mouclass.sys', file: mouclassTarget });
+    console.log('driver Microsoft mouclass.sys incluido (binario do sistema)');
+} else {
+    console.log('AVISO: mouclass.sys nao encontrado no Windows desta maquina');
+}
+
 /* 0c. trampolim de AP (SMP): modo real -> 64 bits; o JS copia p/ 0x9000 no
  * boot e dispara INIT-SIPI-SIPI pelo LAPIC (ver system32/ntos/ke/smp.js) */
 const bootArtifacts = [];
