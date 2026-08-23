@@ -41,7 +41,7 @@ const args = [
     '-drive', `format=raw,file=${path.join(root, 'build', 'os.img')}`,
     '-drive', `format=raw,if=ide,index=1,media=disk,file=${path.join(root, 'build', 'ntfs.img')}`,
     '-serial', 'stdio',
-    // sem '-display none': abre a janela default — DIGITE NELA
+    '-display', 'gtk',   // janela gtk — captura o teclado p/ o convidado
 ];
 console.log('Abrindo o QEMU — DIGITE na janela que abrir.');
 console.log('Cada tecla entregue pelo driver real aparece abaixo como [kbdecho].\n');

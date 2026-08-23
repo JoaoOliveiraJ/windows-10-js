@@ -434,6 +434,33 @@ function run() {
     assert(ObjectManager.lookup('\\Device\\Loader'), 'loader device criado');
     checkNativeDriver('\\Device\\Loader', 'loader-ok');
     Scheduler.kill(probePid);
+    // modo RAWKBD (bundle com /rawkbd): isola o 8042 SEM nenhum driver nativo.
+    // Habilita o scanning e faz polling cru da porta 0x60 — se o QEMU entrega
+    // tecla, os scancodes aparecem aqui. Prova se o problema e' QEMU ou driver.
+    if (MemoryFileSystem.exists('/rawkbd')) {
+        os.debugPrint('[rawkbd] habilitando scanning (0xF4) e sondando 0x60 — ' +
+                      'digite na janela do QEMU');
+        os.writePort8(0x60, 0xF4);
+        let ackSt = 0;
+        for (let i = 0; i < 1000 && !(ackSt & 1); i++) ackSt = os.readPort8(0x64);
+        if (ackSt & 1) os.readPort8(0x60);   // consome o ACK
+        os.debugPrint('[rawkbd] scan habilitado; polling...');
+        let lastCount = Interrupts.irqCount(Interrupts.VECTOR_KEYBOARD);
+        for (;;) {
+            Interrupts.dispatchPending();
+            const irqNow = Interrupts.irqCount(Interrupts.VECTOR_KEYBOARD);
+            if (irqNow !== lastCount) {
+                lastCount = irqNow;
+                os.debugPrint('[rawkbd] IRQ1 contagem=' + irqNow);
+            }
+            const status = os.readPort8(0x64);
+            if (status & 1) {
+                const scan = os.readPort8(0x60);
+                os.debugPrint('[rawkbd] SCANCANE 0x' + scan.toString(16) +
+                              ' (status 0x' + status.toString(16) + ')');
+            }
+        }
+    }
 
     // grupo 31: DRIVER DE TERCEIRO — o kbdclass.sys do Windows (binario
     // Microsoft, relocado de 0x1c0000000 pelo nosso loader PE) carrega e
@@ -543,6 +570,17 @@ function run() {
         if (MemoryFileSystem.exists('/kbdecho')) {
             os.debugPrint('[kbdecho] lendo teclas do \\Device\\KeyboardClass0 ' +
                           '(driver real i8042prt+kbdclass) — digite na janela');
+            // habilita o scanning do teclado PS/2 explicitamente (0xF4) e
+            // reporta o estado — diagnostico p/ ver se o QEMU entrega input
+            os.writePort8(0x60, 0xF4);
+            {
+                let ackSt = 0;
+                for (let i = 0; i < 1000 && !(ackSt & 1); i++) ackSt = os.readPort8(0x64);
+                const ack = (ackSt & 1) ? os.readPort8(0x60) : -1;
+                os.debugPrint('[kbdecho] 0xF4 enable-scan ACK=0x' +
+                              (ack < 0 ? '-' : ack.toString(16)) +
+                              ' — digite na janela do QEMU agora');
+            }
             const echoEvent = GuestMemory.guestAllocBytes(0x18);
             const printEntries = (dataPointer, info) => {
                 for (let off = 0; off + 12 <= info; off += 12) {
