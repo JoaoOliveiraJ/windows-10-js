@@ -16,7 +16,8 @@ function getIrql() { return currentIrql; }
 
 function raiseIrql(newIrql) {
     if (newIrql < currentIrql) {
-        os.debugPrint('[ke] BUGCHECK: KeRaiseIrql para nivel menor');
+        os.debugPrint('[ke] BUGCHECK: KeRaiseIrql p/ nivel menor (' +
+                      newIrql + ' < ' + currentIrql + ')');
         os.halt();
     }
     const old = currentIrql;

@@ -477,7 +477,7 @@ function run() {
     if (keyboardStackNode && keyboardStackNode.data.pnpStarted) {
         const Dispatcher = require('ntos/ke/dispatcher');
         const eventPointer = GuestMemory.guestAllocBytes(0x18);
-        Dispatcher.initializeEvent(eventPointer, 1, 0);   // SynchronizationEvent
+        Dispatcher.initializeEvent(eventPointer, 0, 0);   // NotificationEvent (manual)
         // abre a PORTA do i8042 (o FDO funcional): o CREATE do driver marca a
         // porta como "aberta", habilitando a entrega de scancodes ao kbdclass
         const portOpenResult = IoManager.openDevice('\\Device\\' + keyboardStackNode.name);
@@ -493,6 +493,17 @@ function run() {
         });
         if (readRequest.status === 0x103) {   // STATUS_PENDING: esperando tecla
             os.debugPrint('KBDTEST_READY');   // o harness injeta a tecla agora
+            // injeta um scancode REAL no 8042 via o comando 0xD2 do controlador
+            // (Write Output Buffer): o byte aparece no buffer de saida e dispara
+            // a IRQ1 — exercita a cadeia inteira (ISR->DPC->kbdclass) como uma
+            // tecla de verdade, sem depender de injecao externa
+            const injectScancode = (scanByte) => {
+                os.writePort8(0x64, 0xD2);      // 8042: Write Output Buffer
+                os.writePort8(0x60, scanByte);  // o scancode (0x1E = 'a' make)
+            };
+            injectScancode(0x1E);   // 'a' make
+            injectScancode(0x9E);   // 'a' break
+            os.writePhysical8(0x81518, 1);   // tracer na janela da injecao
             const zeroTimeout = GuestMemory.guestAllocBytes(8);
             const deadline = Clock.uptimeMs() + 10000;
             let completed = false;
@@ -521,6 +532,8 @@ function run() {
             GuestMemory.guestFreeBytes(zeroTimeout);
             if (completed) IoManager.waitPendingIoRequest(readRequest, 0);
             else IoManager.cancelPendingIoRequest(readRequest);   // sem tecla: cancela
+            // os devices de teclado ficam ABERTOS (o teclado do sistema segue
+            // em uso — o close dispararia a sequencia de disable da porta)
         } else {
             os.debugPrint('KBDTEST_SKIP (READ completou de cara: 0x' +
                           (readRequest.status >>> 0).toString(16) + ')');
@@ -570,8 +583,6 @@ function run() {
                 }
             }
         }
-        IoManager.closeDevice(openResult.handle);
-        IoManager.closeDevice(portOpenResult.handle);
         GuestMemory.guestFreeBytes(eventPointer);
     }
 

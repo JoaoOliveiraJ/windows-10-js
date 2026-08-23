@@ -29,7 +29,7 @@ const MOTHERBOARD_DEVICES = [
             { type: NtAbi.CM_PARTIAL_RESOURCE_DESCRIPTOR.TYPE_PORT,
               start: 0x64, length: 1 },                    // comando/status
             { type: NtAbi.CM_PARTIAL_RESOURCE_DESCRIPTOR.TYPE_INTERRUPT,
-              level: 1, vector: 0x21, affinity: 0xFF },    // IRQ1 (PIC)
+              level: 8, vector: 0x21, affinity: 0xFF },    // IRQ1 (DIRQL 8, PIC)
         ],
     },
     {
@@ -43,7 +43,7 @@ const MOTHERBOARD_DEVICES = [
             { type: NtAbi.CM_PARTIAL_RESOURCE_DESCRIPTOR.TYPE_PORT,
               start: 0x64, length: 1 },
             { type: NtAbi.CM_PARTIAL_RESOURCE_DESCRIPTOR.TYPE_INTERRUPT,
-              level: 12, vector: 0x2C, affinity: 0xFF },   // IRQ12 (PIC slave)
+              level: 12, vector: 0x2C, affinity: 0xFF },   // IRQ12 (DIRQL 12, PIC slave)
         ],
     },
 ];
