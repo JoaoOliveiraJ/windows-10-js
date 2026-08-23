@@ -124,14 +124,16 @@ static JSValue prim_rdtsc(JSContext *ctx, JSValueConst this_val,
 static JSValue prim_armDataWriteWatchpoint(JSContext *ctx,
                                            JSValueConst this_val,
                                            int argc, JSValueConst *argv) {
-    uint32_t addr;
+    uint32_t addr, mode;
     uint64_t dr7;
     (void)this_val; (void)argc;
     JS_ToUint32(ctx, &addr, argv[0]);
+    mode = 1;                                   /* padrao: so escrita */
+    if (argc > 1) JS_ToUint32(ctx, &mode, argv[1]);
     __asm__ volatile("mov %0, %%dr0" :: "r"((uint64_t)addr));
-    dr7 = 0x1                  /* L0: watchpoint 0 localmente habilitado */
-        | (0x1ULL << 16)       /* RW0 = 01: SOMENTE escrita de dados */
-        | (0x2ULL << 18);      /* LEN0 = 10: janela de 8 bytes */
+    dr7 = 0x1                                   /* L0: watchpoint 0 habilitado */
+        | ((uint64_t)(mode & 3) << 16)          /* RW0: 01=escrita 11=leitura+escrita */
+        | (0x2ULL << 18);                       /* LEN0 = 10: janela de 8 bytes */
     __asm__ volatile("mov %0, %%dr7" :: "r"(dr7) : "memory");
     return JS_UNDEFINED;
 }

@@ -111,6 +111,22 @@ static JSValue prim_execMachineCode(JSContext *ctx, JSValueConst this_val,
 extern uint64_t exec_msabi(uint64_t addr, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4);
 
+/* traco de execucao nativa p/ debug de drivers: quando o byte 0x81518 != 0
+ * (ligado pelo JS), cada chamada imprime o endereco do alvo se estiver na
+ * faixa de imagens de drivers (0x1900000-0x1F00000) — revela o fluxo
+ * interno do driver a granularidade de funcao */
+static void exec_trace(uint64_t addr) {
+    int i;
+    if (*(volatile uint8_t *)0x81518 == 0) return;
+    if (addr < 0x1900000 || addr >= 0x1F00000) return;
+    host_serial_puts("[exec] 0x");
+    for (i = 15; i >= 0; i--) {
+        char c = "0123456789abcdef"[(addr >> (i * 4)) & 0xF];
+        host_serial_write(&c, 1);
+    }
+    host_serial_puts("\n");
+}
+
 static JSValue prim_execMsAbi(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
     double addr, a1, a2, a3, a4;
@@ -121,6 +137,7 @@ static JSValue prim_execMsAbi(JSContext *ctx, JSValueConst this_val,
     JS_ToFloat64(ctx, &a2, argv[2]);
     JS_ToFloat64(ctx, &a3, argv[3]);
     JS_ToFloat64(ctx, &a4, argv[4]);
+    exec_trace((uint64_t)addr);
     r = exec_msabi((uint64_t)addr, (uint64_t)a1, (uint64_t)a2,
                    (uint64_t)a3, (uint64_t)a4);
     return JS_NewFloat64(ctx, (double)r);

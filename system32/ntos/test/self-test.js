@@ -446,9 +446,7 @@ function run() {
 
     // grupo 32: i8042prt.sys — o PORT driver PS/2 da Microsoft. DriverEntry
     // registra AddDevice; o hardware init acontece no START_DEVICE (PnP)
-    globalThis.__traceApiCalls = true;   // rastreio da 1a subida do driver
     Ntoskrnl.loadDriver('/i8042prt.sys');
-    globalThis.__traceApiCalls = false;
     assert(ObjectManager.lookup('\\Driver\\i8042prt'),
            'i8042prt.sys (Microsoft) carregado no namespace');
     os.debugPrint('[selftest] i8042prt.sys da Microsoft carregado com sucesso');
