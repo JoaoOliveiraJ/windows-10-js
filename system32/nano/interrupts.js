@@ -70,13 +70,15 @@ function init() {
 
     // ORDEM IMPORTA: nenhuma fonte de IRQ pode estar ativa antes da IDT.
 
-    // 1. PIC 8259: master -> 0x20, slave -> 0x28; so IRQ1 (teclado) habilitada
-    //    (o timer vem do LAPIC timer, como um SO moderno)
+    // 1. PIC 8259: master -> 0x20, slave -> 0x28; so IRQ1 (teclado) +
+    //    cascade IRQ2 habilitadas no boot — as demais (IRQ14/15 IDE etc.)
+    //    sao DESMASCARADAS na conexao do KINTERRUPT (ver interrupt-object.js:
+    //    como o HAL faz — evita entregar latch pendente antigo ao driver)
     os.writePort8(0x20, 0x11); os.writePort8(0xA0, 0x11);
     os.writePort8(0x21, 0x20); os.writePort8(0xA1, 0x28);
     os.writePort8(0x21, 0x04); os.writePort8(0xA1, 0x02);
     os.writePort8(0x21, 0x01); os.writePort8(0xA1, 0x01);
-    os.writePort8(0x21, 0xFD); os.writePort8(0xA1, 0xFF);
+    os.writePort8(0x21, 0xF9); os.writePort8(0xA1, 0xFF);
 
     // 2. constroi a IDT na memoria fisica (0x82000) — TODOS os 256 vetores
     //    (o LAPIC pode entregar spurious 0xFF; vetor sem gate = crash)
@@ -140,6 +142,17 @@ function dispatchPending() {
         handlerFunction(vector, count - lastCount);
     }
 }
+
+// ponto de entrada do DESPACHO IMEDIATO (chamado pelo stub asm via o C):
+// a ISR nativa do vetor roda AGORA, no contexto da IRQ — a contagem e'
+// marcada para o dispatchPending nao repetir a entrega
+function dispatchNativeImmediate(vector) {
+    const handlerFunction = handlerByVector.get(vector);
+    if (!handlerFunction) return;
+    lastCountByVector.set(vector, irqCount(vector));
+    handlerFunction(vector, 1);
+}
+globalThis.__jsosIrqNativeDispatch = dispatchNativeImmediate;
 
 // IRQs estao chegando de verdade? (hardware/emulador entregando)
 function irqsArriving() {

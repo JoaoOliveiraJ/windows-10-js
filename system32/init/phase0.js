@@ -18,6 +18,8 @@ const SharedUserData = require('ntos/mm/shared-user-data');
 const Smp = require('ntos/ke/smp');
 const Clock = require('ntos/ke/clock');
 const Scheduler = require('ntos/ps/scheduler');
+const Dispatcher = require('ntos/ke/dispatcher');
+const GuestMemory = require('win32/guest-memory');
 
 function asciiBytes(text) {
     const bytes = [];
@@ -79,6 +81,20 @@ function init() {
     ObjectManager.createDirectory('\\Device');
     ObjectManager.createDirectory('\\Driver');
     ObjectManager.createDirectory('\\DosDevices');
+    // \GLOBAL??: o diretorio global de devices DOS do NT — o mountmgr cria
+    // links aqui no DriverEntry (\GLOBAL??\MountedDevice etc.)
+    ObjectManager.createDirectory('\\GLOBAL??');
+    // eventos nomeados do kernel (\KernelObjects\*): o mountmgr abre estes
+    // para sinalizacao de pressao de memoria/commit (objetos reais do NT)
+    ObjectManager.createDirectory('\\KernelObjects');
+    for (const eventName of ['HighMemoryCondition', 'LowMemoryCondition',
+                             'HighCommitCondition', 'LowCommitCondition',
+                             'MaximumCommitCondition']) {
+        const eventPointer = GuestMemory.guestAllocBytes(0x18);
+        Dispatcher.initializeEvent(eventPointer, 0, 0);   // Notification, nao-sinalizado
+        ObjectManager.createObject('\\KernelObjects', eventName, 'Event',
+                                   { eventPointer });
+    }
 
     // apps embutidas viram arquivos do VFS ( /<basename> )
     for (const name of os.listBundleFiles()) {
@@ -115,6 +131,17 @@ function init() {
     // o PnP casa um devnode da classe Keyboard/Mouse — como o NT faz
     seedService('kbdclass',  'kbdclass.sys',  3);
     seedService('mouclass',  'mouclass.sys',  3);
+    // ---- pilha de armazenamento (ordem de boot do NT: port -> class -> mntmgr)
+    // atapi: miniport IDE; o DriverEntry chama AtaPortInitialize (ataport.sys
+    // carrega como DEPENDENCIA de import, sem servico proprio — como no NT).
+    // O casamento com o controlador IDE PCI e' pelo "INF estatico" do pnp.js.
+    seedService('atapi',    'atapi.sys',    0);
+    // disk: driver de classe de disco; anexa nos PDOs que o ataport enumera
+    // (hardwareId "IDE\Disk..." casado por prefixo — como o disk.inf do NT)
+    seedService('disk',     'disk.sys',     0);
+    // mountmgr: Mount Manager — registra notificacoes de chegada de volume e
+    // mantem o banco de pontos de montagem (\Registry\Machine\System\MountedDevices)
+    seedService('mountmgr', 'mountmgr.sys', 0);
     seedServiceParameters('i8042prt', [
         ['KeyboardDataQueueSize', 4, dwordBytes(0x64)],
         ['MouseDataQueueSize',    4, dwordBytes(0x64)],

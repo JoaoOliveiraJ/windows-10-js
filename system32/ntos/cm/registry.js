@@ -103,5 +103,12 @@ function getValue(handle, valueName) {
     return node.values.get(valueName.toLowerCase()) || null;
 }
 
+// remove um valor da chave (devolve true se existia) — RtlDeleteRegistryValue
+function deleteValue(handle, valueName) {
+    const node = getNode(handle);
+    if (!node) return false;
+    return node.values.delete(valueName.toLowerCase());
+}
+
 module.exports = { openOrCreate, open, getNode, getPath, deleteKey, closeHandle,
-                   setValue, getValue, listKeys, readValueByPath };
+                   setValue, getValue, deleteValue, listKeys, readValueByPath };

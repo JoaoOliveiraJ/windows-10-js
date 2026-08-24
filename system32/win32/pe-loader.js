@@ -243,8 +243,24 @@ function load(fileBuffer) {
                 } else {
                     const functionName = readCString(rvaToFileOffset(lo) + 2); // pula o hint
                     apiId = resolveImport(dllName, functionName);
-                    if (apiId < 0) throw new Error('API nao suportada: ' + dllName + '!' + functionName);
+                    if (apiId === -1 || apiId === null || apiId === undefined)
+                        throw new Error('API nao suportada: ' + dllName + '!' + functionName);
                     functionLabel = functionName;
+                }
+                // resolvedor pode devolver um ENDERECO NATIVO direto (import de
+                // outro driver .sys: a IAT recebe o ponteiro real da funcao do
+                // outro modulo — exatamente o que o loader do Windows faz;
+                // trampolim so existe para APIs implementadas em JS)
+                if (typeof apiId === 'object') {
+                    const directAddress = apiId.address;
+                    const iatSlotAddress = imageBase + iatRva + slot * 8;
+                    os.writePhysical32(iatSlotAddress, directAddress >>> 0);
+                    os.writePhysical32(iatSlotAddress + 4,
+                                       Math.floor(directAddress / 0x100000000));
+                    os.debugPrint('[pe]   ' + functionLabel + ' -> nativo 0x' +
+                                  directAddress.toString(16));
+                    slot++;
+                    continue;
                 }
                 if (apiId >= os.getWin32ThunkCount())
                     throw new Error('apiId ' + apiId + ' alem da tabela de trampolins (' +

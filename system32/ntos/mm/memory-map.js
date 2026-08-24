@@ -6,9 +6,9 @@
 //   0x009000-0x009FFF    trampolim de AP (SMP, SIPI vetor 0x09)
 //   0x00A000-0x00AFFF    mailbox SMP (handshake + fila de jobs por CPU)
 //   0x060000-0x06FFFF    pilhas dos APs (4KB por CPU, ate 16 CPUs)
-//   0x100000-0x1FFFFF    imagem do kernel (<= 1MB)
-//   0x200000-0x2FFFFF    pilha do kernel (topo 0x300000)
-//   0x400000-0x4FFFFF    area de .exe PE (1MB)
+//   0x100000-0x3FFFFF    imagem do kernel (<= 3MB)
+//   0x400000-0x4FFFFF    area de .exe PE (1MB) + pilha do kernel no topo
+//                        (topo 0x500008, cresce p/ baixo; .exe PE usa a base)
 //   0x500000-0x1FFFFFF   drivers .sys (512KB cada; o build falha se encostar
 //                        no heap em 0x2000000)
 //   0x2000000-0x5FFFFFF  heap do kernel (kmalloc, 64MB) — inclui a arena

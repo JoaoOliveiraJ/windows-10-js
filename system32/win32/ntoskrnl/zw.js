@@ -12,6 +12,26 @@ const ObjectManager = require('ntos/ob/object-manager');
 const IoManager = require('ntos/io/io-manager');
 const Lifecycle = require('win32/ntoskrnl/lifecycle');
 const Process = require('ntos/ps/process');
+const Dispatcher = require('ntos/ke/dispatcher');
+
+// handles de OBJETOS de kernel abertos via Zw (eventos, diretorios, links):
+// handle -> { kind, node, dataPointer } (o fileHandles acima e' de arquivos)
+const kernelObjectHandles = new Map();
+let nextKernelObjectHandle = 0x4000;
+
+// UNICODE_STRING do chamador: escreve `text` respeitando MaximumLength
+function fillUnicodeString(unicodePointer, text, returnedLengthPointer) {
+    const maximumLength = GuestMemory.readGuest16(unicodePointer + 2);
+    const buffer = GuestMemory.readGuest64(unicodePointer + 8);
+    const needed = text.length * 2;
+    if (returnedLengthPointer)
+        GuestMemory.writeGuest32(returnedLengthPointer, needed);
+    if (needed > maximumLength) return 0xC0000023 | 0;   // STATUS_BUFFER_TOO_SMALL
+    for (let i = 0; i < text.length; i++)
+        GuestMemory.writeGuest16(buffer + i * 2, text.charCodeAt(i));
+    GuestMemory.writeGuest16(unicodePointer, needed);
+    return 0;
+}
 
 const STATUS_NOT_FOUND = 0xC0000009;
 const STATUS_BUFFER_TOO_SMALL = 0xC0000023;
@@ -235,6 +255,15 @@ module.exports = {
         'ZwUnloadDriver',
         'ZwQuerySystemInformation',
         'ZwPowerInformation',
+        'ZwWaitForSingleObject',           // (handle, alertable, timeoutPtr)
+        'ZwOpenEvent',                     // (out, access, objAttr)
+        'ZwCreateDirectoryObject',         // (out, access, objAttr)
+        'ZwMakeTemporaryObject',           // (handle)
+        'ZwOpenSymbolicLinkObject',        // (out, access, objAttr)
+        'ZwQuerySymbolicLinkObject',       // (handle, outUni, outLen)
+        'ZwFsControlFile',                 // (handle, ev, apc, ctx, iosb, code, in, inLen, out, outLen)
+        'ZwQueryVolumeInformationFile',    // (handle, iosb, buf, len, class)
+        'ZwQueryDirectoryFile',            // (handle, ev, apc, ctx, iosb, buf, len, class, single, name, restart)
     ],
     handlers: [
         // ZwCreateKey(outHandlePtr, access, objAttrsPtr, ...) -> NTSTATUS
@@ -496,7 +525,228 @@ module.exports = {
             GuestMemory.writeGuest8(outBufferPointer + 0x0C, 1);   // FastSystemS4?0
             return 0;
         },
+        // ZwWaitForSingleObject(handle, alertable, timeoutPtr): espera real
+        // no objeto do handle (eventos: KEVENT do convidado; o timeout e'
+        // LARGE_INTEGER* — NULL infinito, 0 poll, negativo relativo)
+        (handle, _alertable, timeoutPointer) => {
+            const entry = kernelObjectHandles.get(handle >>> 0);
+            if (!entry || entry.kind !== 'Event') return STATUS_INVALID_HANDLE | 0;
+            return Dispatcher.waitForSingleObject(entry.dataPointer,
+                                                  timeoutPointer) | 0;
+        },
+        // ZwOpenEvent(outHandle, access, objAttr): abre evento NOMEADO (ex:
+        // \KernelObjects\HighMemoryCondition — semeados no phase0)
+        (outHandlePointer, _accessMask, objectAttributesPointer) => {
+            const objectName = keyPathFromObjectAttributes(objectAttributesPointer);
+            const node = ObjectManager.lookup(objectName);
+            if (!node || node.type !== 'Event')
+                return STATUS_OBJECT_NAME_NOT_FOUND | 0;
+            const handle = nextKernelObjectHandle++;
+            kernelObjectHandles.set(handle, { kind: 'Event', node,
+                                              dataPointer: node.data.eventPointer });
+            GuestMemory.writeGuest32(outHandlePointer, handle >>> 0);
+            GuestMemory.writeGuest32(outHandlePointer + 4, 0);
+            return 0;
+        },
+        // ZwCreateDirectoryObject(outHandle, access, objAttr)
+        (outHandlePointer, _accessMask, objectAttributesPointer) => {
+            const objectName = keyPathFromObjectAttributes(objectAttributesPointer);
+            const node = ObjectManager.createDirectory(objectName);
+            if (!node) return 0xC0000035 | 0;   // STATUS_OBJECT_NAME_COLLISION
+            const handle = nextKernelObjectHandle++;
+            kernelObjectHandles.set(handle, { kind: 'Directory', node });
+            GuestMemory.writeGuest32(outHandlePointer, handle >>> 0);
+            GuestMemory.writeGuest32(outHandlePointer + 4, 0);
+            return 0;
+        },
+        // ZwMakeTemporaryObject(handle): limpa o flag PERMANENT do objeto —
+        // o NT o torna deletavel ao fechar o ultimo handle; nosso object
+        // manager registra a marca (a coleta por refcount e' por handle)
+        (handle) => {
+            const entry = kernelObjectHandles.get(handle >>> 0);
+            if (!entry || !entry.node) return STATUS_INVALID_HANDLE | 0;
+            if (entry.node.data && typeof entry.node.data === 'object')
+                entry.node.data.temporary = true;
+            return 0;
+        },
+        // ZwOpenSymbolicLinkObject(outHandle, access, objAttr)
+        (outHandlePointer, _accessMask, objectAttributesPointer) => {
+            const objectName = keyPathFromObjectAttributes(objectAttributesPointer);
+            const node = ObjectManager.lookup(objectName);
+            if (!node || node.type !== 'SymbolicLink')
+                return STATUS_OBJECT_NAME_NOT_FOUND | 0;
+            const handle = nextKernelObjectHandle++;
+            kernelObjectHandles.set(handle, { kind: 'SymbolicLink', node });
+            GuestMemory.writeGuest32(outHandlePointer, handle >>> 0);
+            GuestMemory.writeGuest32(outHandlePointer + 4, 0);
+            return 0;
+        },
+        // ZwQuerySymbolicLinkObject(handle, outUniPtr, outLenPtr): o ALVO do
+        // link (string) na UNICODE_STRING do chamador
+        (handle, outUnicodePointer, returnedLengthPointer) => {
+            const entry = kernelObjectHandles.get(handle >>> 0);
+            if (!entry || entry.kind !== 'SymbolicLink')
+                return STATUS_INVALID_HANDLE | 0;
+            return fillUnicodeString(outUnicodePointer, entry.node.data,
+                                     returnedLengthPointer) | 0;
+        },
+        // ZwFsControlFile(handle, event, apc, apcCtx, ioStatus, fsControlCode,
+        //                 inBuf, inLen, outBuf, outLen): IRP_MJ_FILE_SYSTEM_
+        // CONTROL para o device do handle (a uniao e' a do DEVICE_CONTROL)
+        (fileHandle, _event, _apcRoutine, _apcContext, ioStatusPointer,
+         fsControlCode, inputBuffer, inputLength, outputBuffer, outputLength) => {
+            const entry = fileHandles.get(fileHandle >>> 0);
+            if (!entry || !entry.deviceHandle)
+                return STATUS_INVALID_HANDLE | 0;
+            let data = '';
+            for (let i = 0; i < (inputLength >>> 0); i++)
+                data += String.fromCharCode(GuestMemory.readGuest8(inputBuffer + i));
+            const ioRequest = IoManager.makeIoRequest(
+                IoManager.IRP_MJ.FILE_SYSTEM_CONTROL, {
+                    controlCode: fsControlCode, data,
+                    bufferLength: outputLength >>> 0,
+                });
+            IoManager.callDriver(entry.devicePath, ioRequest);
+            writeIoStatus(ioStatusPointer, ioRequest.status >>> 0,
+                          ioRequest.info || 0);
+            if (ioRequest.status === 0 && ioRequest.info > 0 && outputBuffer) {
+                for (let i = 0; i < ioRequest.info; i++)
+                    GuestMemory.writeGuest8(outputBuffer + i,
+                                            ioRequest.result.charCodeAt(i) & 0xFF);
+            }
+            return ioRequest.status | 0;
+        },
+        // ZwQueryVolumeInformationFile(handle, ioStatus, buf, len, infoClass):
+        // classes reais respondidas sobre o FS do handle (ramfs/NTFS)
+        (fileHandle, ioStatusPointer, bufferPointer, length, infoClass) => {
+            const entry = fileHandles.get(fileHandle >>> 0);
+            if (!entry || !entry.fs) return STATUS_INVALID_HANDLE | 0;
+            const fileList = entry.fs.list ? entry.fs.list() : [];
+            const usedBytes = fileList.reduce(
+                (total, filePath) => total +
+                    Math.max(0, entry.fs.size ? entry.fs.size(filePath) : 0), 0);
+            const written = (status, information) => {
+                writeIoStatus(ioStatusPointer, status >>> 0, information);
+                return status | 0;
+            };
+            if (infoClass === 1) {          // FileFsVolumeInformation
+                const label = 'jsOS';
+                GuestMemory.writeGuest64(bufferPointer, 0);
+                GuestMemory.writeGuest32(bufferPointer + 8, 0x4A534F53);  // serial
+                GuestMemory.writeGuest32(bufferPointer + 12, label.length * 2);
+                GuestMemory.writeGuest8(bufferPointer + 16, 0);           // SupportsObjects
+                for (let i = 0; i < label.length; i++)
+                    GuestMemory.writeGuest16(bufferPointer + 18 + i * 2,
+                                             label.charCodeAt(i));
+                return written(0, 18 + label.length * 2);
+            }
+            if (infoClass === 3) {          // FileFsSizeInformation
+                GuestMemory.writeGuest64(bufferPointer,
+                                         Math.ceil(usedBytes / 512));
+                GuestMemory.writeGuest64(bufferPointer + 8, 0);
+                GuestMemory.writeGuest32(bufferPointer + 16, 1);    // setores/unit
+                GuestMemory.writeGuest32(bufferPointer + 20, 512);  // bytes/setor
+                return written(0, 24);
+            }
+            if (infoClass === 4) {          // FileFsDeviceInformation
+                GuestMemory.writeGuest32(bufferPointer, 7);    // FILE_DEVICE_DISK
+                GuestMemory.writeGuest32(bufferPointer + 4, 0);
+                return written(0, 8);
+            }
+            if (infoClass === 5) {          // FileFsAttributeInformation
+                const fsLabel = entry.fs.list ? 'RAMFS' : 'NTFS';
+                GuestMemory.writeGuest32(bufferPointer, 0x00000002);  // CASE_SENSITIVE_SEARCH? nao: FILE_CASE_PRESERVED_NAMES
+                GuestMemory.writeGuest32(bufferPointer + 4, 255);     // max component
+                GuestMemory.writeGuest32(bufferPointer + 8, fsLabel.length * 2);
+                for (let i = 0; i < fsLabel.length; i++)
+                    GuestMemory.writeGuest16(bufferPointer + 12 + i * 2,
+                                             fsLabel.charCodeAt(i));
+                return written(0, 12 + fsLabel.length * 2);
+            }
+            return written(0xC000000D, 0);   // STATUS_INVALID_INFO_CLASS
+        },
+        // ZwQueryDirectoryFile(handle, event, apc, apcCtx, ioStatus, buf, len,
+        // infoClass, returnSingleEntry, fileNamePtr, restartScan): listagem
+        // FileDirectoryInformation(1) do diretorio aberto (estado por handle)
+        (fileHandle, _event, _apcRoutine, _apcContext, ioStatusPointer,
+         bufferPointer, length, infoClass, returnSingleEntry, fileNamePointer,
+         restartScan) => {
+            if ((infoClass >>> 0) !== 1) return 0xC000000D | 0;
+            const entry = fileHandles.get(fileHandle >>> 0);
+            if (!entry || !entry.fs || !entry.fs.list)
+                return STATUS_INVALID_HANDLE | 0;
+            if (restartScan || entry.directoryScanIndex === undefined)
+                entry.directoryScanIndex = 0;
+            const prefix = entry.fsPath === '/' ? '/' : entry.fsPath + '/';
+            const names = entry.fs.list()
+                .filter(filePath => filePath.startsWith(prefix) &&
+                    !filePath.slice(prefix.length).includes('/'))
+                .map(filePath => filePath.slice(prefix.length));
+            const pattern = fileNamePointer
+                ? GuestStrings.readUnicodeString(fileNamePointer) : null;
+            const matched = (pattern && pattern !== '*')
+                ? names.filter(name => name.toLowerCase() === pattern.toLowerCase())
+                : names;
+            let cursor = bufferPointer >>> 0;
+            let previousRecordOffset = 0;
+            let emitted = 0;
+            while (entry.directoryScanIndex < matched.length) {
+                const name = matched[entry.directoryScanIndex];
+                const recordSize = 0x40 + name.length * 2;
+                if ((cursor - bufferPointer) + recordSize > (length >>> 0)) break;
+                const index = entry.directoryScanIndex;
+                GuestMemory.writeGuest32(cursor + 0x04, index);          // FileIndex
+                GuestMemory.writeGuest64(cursor + 0x28, entry.fs.size ?
+                    Math.max(0, entry.fs.size(prefix + name)) : 0);      // EndOfFile
+                GuestMemory.writeGuest64(cursor + 0x30, 0);              // AllocationSize
+                GuestMemory.writeGuest32(cursor + 0x38, 0x80);           // FILE_ATTRIBUTE_NORMAL
+                GuestMemory.writeGuest32(cursor + 0x3C, name.length * 2);
+                for (let i = 0; i < name.length; i++)
+                    GuestMemory.writeGuest16(cursor + 0x40 + i * 2,
+                                             name.charCodeAt(i));
+                if (previousRecordOffset)
+                    GuestMemory.writeGuest32(previousRecordOffset,
+                                             cursor - previousRecordOffset);
+                previousRecordOffset = cursor;
+                cursor += recordSize;
+                entry.directoryScanIndex++;
+                emitted++;
+                if (returnSingleEntry) break;
+            }
+            if (previousRecordOffset)
+                GuestMemory.writeGuest32(previousRecordOffset, 0);       // ultimo
+            const information = cursor - bufferPointer;
+            writeIoStatus(ioStatusPointer,
+                          emitted ? 0 : 0x80000006,   // STATUS_NO_MORE_FILES
+                          information);
+            return emitted ? 0 : 0x80000006 | 0;
+        },
     ],
     // compartilhado com o grupo io.js (IoCreateFile delega arquivos p/ ca)
     zwCreateFile,
+    // helper JS (RtlCreateSystemVolumeInformationFolder): cria/abre arquivo
+    // ou DIRETORIO por nome — caminho real do zwCreateFile, fechando ao fim
+    createFileByName(objectName, createDisposition, createOptions,
+                     fileAttributes) {
+        const nameBuffer = GuestMemory.guestAllocBytes(objectName.length * 2 + 2);
+        GuestStrings.writeGuestWideString(nameBuffer, objectName);
+        const unicodePointer = GuestMemory.guestAllocBytes(16);
+        GuestMemory.writeGuest16(unicodePointer, objectName.length * 2);
+        GuestMemory.writeGuest16(unicodePointer + 2, objectName.length * 2 + 2);
+        GuestMemory.writeGuest64(unicodePointer + 8, nameBuffer);
+        const attributesPointer = GuestMemory.guestAllocBytes(
+            NtAbi.OBJECT_ATTRIBUTES.SIZE);
+        GuestMemory.writeGuest64(attributesPointer +
+            NtAbi.OBJECT_ATTRIBUTES.OBJECT_NAME, unicodePointer);
+        const ioStatusPointer = GuestMemory.guestAllocBytes(16);
+        const outHandlePointer = GuestMemory.guestAllocBytes(8);
+        const status = zwCreateFile(outHandlePointer, 0, attributesPointer,
+                                    ioStatusPointer, 0, fileAttributes, 0,
+                                    createDisposition, createOptions, 0, 0);
+        if (status === 0) {
+            const handle = GuestMemory.readGuest32(outHandlePointer);
+            fileHandles.delete(handle >>> 0);   // fecha (como ZwClose)
+        }
+        return status | 0;
+    },
 };

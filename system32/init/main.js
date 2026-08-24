@@ -41,6 +41,20 @@ PeLoader.registerResolver(/^hal\.dll$/i, (dll, name) => Ntoskrnl.lookup(dll, nam
                           (dll, ordinal) => Ntoskrnl.lookupOrdinal(dll, ordinal));
 PeLoader.registerResolver(/^wmilib\.sys$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
 PeLoader.registerResolver(/^wpprecorder\.sys$/i, (dll, name) => Ntoskrnl.lookup(dll, name));
+// modulo-a-modulo (driver importando de outro .sys: disk->CLASSPNP, atapi->
+// ataport): carrega o modulo dependente por completo (PE + DriverEntry, como
+// o MmLoadSystemImage do NT) e devolve o ENDERECO NATIVO do export — a IAT do
+// importador recebe o ponteiro real, sem trampolim (nativo chama nativo)
+PeLoader.registerResolver(/\.sys$/i, (dllName, functionName) => {
+    const Lifecycle = require('win32/ntoskrnl/lifecycle');
+    const dependencyNode = Lifecycle.ensureModuleDriverLoaded(dllName);
+    if (!dependencyNode)
+        throw new Error('modulo dependente falhou ao carregar: ' + dllName);
+    const exportAddress = dependencyNode.data.exports[functionName];
+    if (!exportAddress)
+        throw new Error('export ausente: ' + dllName + '!' + functionName);
+    return { address: exportAddress };
+});
 
 function banner() {
     Console.print('=================================================');

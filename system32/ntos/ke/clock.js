@@ -41,6 +41,14 @@ function init() {
     }
     tscAtBoot = os.rdtsc();
     wallClockMsAtBoot = Date.now();
+    // publica p/ o C (atualizacao preemptiva do KUSER_SHARED_DATA na IRQ do
+    // timer — o SystemTime precisa avancar durante spins nativos de drivers)
+    os.writePhysical32(0x81534, Math.floor(tscFrequencyHz));
+    os.writePhysical32(0x81538, tscAtBoot % 0x100000000);
+    os.writePhysical32(0x81538 + 4, Math.floor(tscAtBoot / 0x100000000));
+    const bootNtTime100ns = (Date.now() + 11644473600000) * 10000;
+    os.writePhysical32(0x81540, bootNtTime100ns % 0x100000000);
+    os.writePhysical32(0x81540 + 4, Math.floor(bootNtTime100ns / 0x100000000));
     os.debugPrint('[clock] TSC = ' + (tscFrequencyHz / 1000000).toFixed(1) + ' MHz');
 }
 

@@ -8,6 +8,28 @@ const GuestStrings = require('win32/guest-strings');
 const Registry = require('ntos/cm/registry');
 const NtAbi = require('win32/nt-abi');
 const Irql = require('ntos/ke/irql');
+const ZwExports = require('win32/ntoskrnl/zw');
+
+// prefixos RTL_REGISTRY_* (RtlCreateRegistryKey/RtlDeleteRegistryValue): o
+// path relativo ganha a base absoluta — sem control sets no jsOS (Services/
+// Control direto sob System, como o resto do kernel faz)
+const RTL_REGISTRY_PREFIX = {
+    1: '\\Registry\\Machine\\System\\Services\\',
+    2: '\\Registry\\Machine\\System\\Control\\',
+    3: '\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\',
+    4: '\\Registry\\Machine\\Hardware\\DeviceMap\\',
+    5: '\\Registry\\User\\.CurrentUser\\',
+};
+
+function rtlRegistryPath(relativeTo, rawPath) {
+    if (relativeTo === 0) return rawPath;   // RTL_REGISTRY_ABSOLUTE
+    const prefix = RTL_REGISTRY_PREFIX[relativeTo];
+    if (!prefix) return rawPath;
+    return prefix + rawPath.replace(/^\\+/, '');
+}
+
+// notificacoes de mudanca de feature (RtlRegisterFeatureConfigurationChange...)
+const featureConfigurationNotifications = [];
 
 const US = NtAbi.UNICODE_STRING;
 const TWO_POW_63 = 0x8000000000000000;
@@ -166,6 +188,29 @@ module.exports = {
         '_vsnwprintf',
         '_wcsupr',                         // uppercase wide in-place
         '__C_specific_handler',            // despachante SEH da CRT
+        'RtlInitializeBitMap',             // (bitmap, buffer, sizeBits)
+        'RtlSetAllBits',                   // (bitmap)
+        'RtlClearBits',                    // (bitmap)
+        'RtlClearBit',                     // (bitmap, bit)
+        'RtlFindClearBitsAndSet',          // (bitmap, count, hint) -> idx
+        'RtlInitString',                   // (destString, srcCString)
+        'RtlStringFromGUID',               // (guid, outUni) -> NTSTATUS
+        'RtlDuplicateUnicodeString',       // (alloc, src, dest)
+        'RtlCreateRegistryKey',            // (relativeTo, pathWide)
+        'RtlDeleteRegistryValue',          // (relativeTo, pathWide, nameWide)
+        'RtlGetVersion',                   // (outVersionInfo)
+        'RtlQueryFeatureConfiguration',    // (id, type, stamp, buf, size)
+        'RtlQueryFeatureConfigurationChangeStamp',
+        'RtlRegisterFeatureConfigurationChangeNotification',
+        'RtlUnregisterFeatureConfigurationChangeNotification',
+        'RtlTimeToTimeFields',             // (timePtr, outTimeFields)
+        'RtlUpcaseUnicodeChar',            // (wchar) -> upper
+        'RtlxAnsiStringToUnicodeSize',     // (ansiString) -> bytes
+        'RtlCreateSystemVolumeInformationFolder', // (volumeRootUni)
+        '_strupr',                         // uppercase ANSI in-place
+        '_vsnprintf',                      // (buf, count, fmt, vaList)
+        'vDbgPrintExWithPrefix',           // (prefix, compId, level, fmt, vaList)
+        'wcsstr',                          // (haystackW, needleW) -> ptr
     ],
     handlers: [
         // RtlInitUnicodeString(outPtr, wideStrPtr): so aponta o buffer.
@@ -652,6 +697,284 @@ module.exports = {
                           ' em codigo de driver sem tratamento — bugcheck');
             os.halt();
             return 0;
+        },
+        // ---- RTL_BITMAP real { u32 SizeOfBitMap; pad; u64 BufferPtr } ----
+        // RtlInitializeBitMap(bitmap, buffer, sizeInBits)
+        (bitmapPointer, bufferPointer, sizeInBits) => {
+            GuestMemory.writeGuest32(bitmapPointer, sizeInBits >>> 0);
+            GuestMemory.writeGuest64(bitmapPointer + 8, bufferPointer);
+            return 0;
+        },
+        // RtlSetAllBits(bitmap): todos os bits em 1
+        (bitmapPointer) => {
+            const sizeInBits = GuestMemory.readGuest32(bitmapPointer);
+            const buffer = GuestMemory.readGuest64(bitmapPointer + 8);
+            for (let i = 0; i < Math.ceil(sizeInBits / 32); i++)
+                GuestMemory.writeGuest32(buffer + i * 4, 0xFFFFFFFF);
+            return 0;
+        },
+        // RtlClearBits(bitmap): todos os bits em 0
+        (bitmapPointer) => {
+            const sizeInBits = GuestMemory.readGuest32(bitmapPointer);
+            const buffer = GuestMemory.readGuest64(bitmapPointer + 8);
+            for (let i = 0; i < Math.ceil(sizeInBits / 32); i++)
+                GuestMemory.writeGuest32(buffer + i * 4, 0);
+            return 0;
+        },
+        // RtlClearBit(bitmap, bitNumber)
+        (bitmapPointer, bitNumber) => {
+            const buffer = GuestMemory.readGuest64(bitmapPointer + 8);
+            const wordIndex = (bitNumber >>> 0) >> 5;
+            const word = GuestMemory.readGuest32(buffer + wordIndex * 4);
+            GuestMemory.writeGuest32(buffer + wordIndex * 4,
+                                     word & ~(1 << (bitNumber & 31)));
+            return 0;
+        },
+        // RtlFindClearBitsAndSet(bitmap, numberToFind, hintIndex) -> indice do
+        // run de bits limpos (marcados aqui) ou 0xFFFFFFFF
+        (bitmapPointer, numberToFind, hintIndex) => {
+            const sizeInBits = GuestMemory.readGuest32(bitmapPointer);
+            const buffer = GuestMemory.readGuest64(bitmapPointer + 8);
+            const testBit = (bit) =>
+                (GuestMemory.readGuest32(buffer + (bit >> 5) * 4) >>> (bit & 31)) & 1;
+            const setBit = (bit) => {
+                const wordOffset = (bit >> 5) * 4;
+                GuestMemory.writeGuest32(buffer + wordOffset,
+                    GuestMemory.readGuest32(buffer + wordOffset) | (1 << (bit & 31)));
+            };
+            for (let start = hintIndex >>> 0;
+                 start + numberToFind <= sizeInBits; start++) {
+                let run = 0;
+                while (run < numberToFind && !testBit(start + run)) run++;
+                if (run === numberToFind) {
+                    for (let bit = start; bit < start + run; bit++) setBit(bit);
+                    return start;
+                }
+            }
+            return 0xFFFFFFFF;
+        },
+        // RtlInitString(destStringPtr, srcCStringPtr): STRING ANSI (Length
+        // sem o NUL, MaximumLength com)
+        (destStringPointer, sourceStringPointer) => {
+            const text = sourceStringPointer
+                ? GuestStrings.readGuestCString(sourceStringPointer) : '';
+            GuestMemory.writeGuest16(destStringPointer, text.length);
+            GuestMemory.writeGuest16(destStringPointer + 2, text.length + 1);
+            GuestMemory.writeGuest64(destStringPointer + 8,
+                                     sourceStringPointer >>> 0);
+            return 0;
+        },
+        // RtlStringFromGUID(guidPtr, outUniPtr): formata o GUID no formato
+        // canonico wide {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} (campos 1-3
+        // little-endian no binario) em buffer de pool
+        (guidPointer, outUnicodePointer) => {
+            const hex = (value, width) =>
+                (value >>> 0).toString(16).toUpperCase().padStart(width, '0');
+            const data1 = GuestMemory.readGuest32(guidPointer);
+            const data2 = GuestMemory.readGuest16(guidPointer + 4);
+            const data3 = GuestMemory.readGuest16(guidPointer + 6);
+            let text = '{' + hex(data1, 8) + '-' + hex(data2, 4) + '-' +
+                       hex(data3, 4) + '-';
+            for (let i = 0; i < 2; i++)
+                text += hex(GuestMemory.readGuest8(guidPointer + 8 + i), 2);
+            text += '-';
+            for (let i = 2; i < 8; i++)
+                text += hex(GuestMemory.readGuest8(guidPointer + 8 + i), 2);
+            text += '}';
+            const buffer = GuestMemory.guestAllocBytes(text.length * 2 + 2);
+            GuestStrings.writeGuestWideString(buffer, text);
+            GuestMemory.writeGuest16(outUnicodePointer, text.length * 2);
+            GuestMemory.writeGuest16(outUnicodePointer + 2, text.length * 2 + 2);
+            GuestMemory.writeGuest64(outUnicodePointer + 8, buffer);
+            return 0;
+        },
+        // RtlDuplicateUnicodeString(alloc, source, dest) -> NTSTATUS
+        (allocateNewString, sourcePointer, destPointer) => {
+            const length = GuestMemory.readGuest16(sourcePointer);
+            const sourceBuffer = GuestMemory.readGuest64(sourcePointer + 8);
+            let destBuffer;
+            if (allocateNewString) {
+                destBuffer = GuestMemory.guestAllocBytes(length + 2);
+                GuestMemory.writeGuest16(destPointer + 2, length + 2);
+            } else {
+                destBuffer = GuestMemory.readGuest64(destPointer + 8);
+                if (GuestMemory.readGuest16(destPointer + 2) < length)
+                    return 0xC0000023 | 0;   // STATUS_BUFFER_TOO_SMALL
+            }
+            for (let i = 0; i < length; i++)
+                GuestMemory.writeGuest8(destBuffer + i,
+                                        GuestMemory.readGuest8(sourceBuffer + i));
+            GuestMemory.writeGuest16(destPointer, length);
+            GuestMemory.writeGuest64(destPointer + 8, destBuffer);
+            return 0;
+        },
+        // RtlCreateRegistryKey(relativeTo, pathWidePtr): cria a chave com o
+        // prefixo do RTL_REGISTRY_* (ABSOLUTE ja' vem completo)
+        (relativeTo, pathPointer) => {
+            const relativeBase = relativeTo & 0xFFFF;
+            const rawPath = GuestStrings.readGuestWideString(pathPointer);
+            const fullPath = rtlRegistryPath(relativeBase, rawPath);
+            const keyHandle = Registry.openOrCreate(fullPath);
+            if (!keyHandle) return 0xC0000034 | 0;
+            Registry.closeHandle(keyHandle);
+            return 0;
+        },
+        // RtlDeleteRegistryValue(relativeTo, pathWidePtr, valueNameWidePtr)
+        (relativeTo, pathPointer, valueNamePointer) => {
+            const relativeBase = relativeTo & 0xFFFF;
+            const rawPath = GuestStrings.readGuestWideString(pathPointer);
+            const valueName = GuestStrings.readGuestWideString(valueNamePointer);
+            const keyHandle = Registry.open(rtlRegistryPath(relativeBase, rawPath));
+            if (!keyHandle) return 0xC0000034 | 0;
+            const removed = Registry.deleteValue(keyHandle, valueName);
+            Registry.closeHandle(keyHandle);
+            return removed ? 0 : 0xC0000034 | 0;
+        },
+        // RtlGetVersion(outVersionInfoPtr): RTL_OSVERSIONINFOEXW — a versao
+        // que implementamos (10.0.19045, Win10 22H2, como o PsGetVersion)
+        (versionInfoPointer) => {
+            GuestMemory.writeGuest32(versionInfoPointer + 4, 10);   // Major
+            GuestMemory.writeGuest32(versionInfoPointer + 8, 0);    // Minor
+            GuestMemory.writeGuest32(versionInfoPointer + 12, 19045); // Build
+            GuestMemory.writeGuest32(versionInfoPointer + 16, 2);   // VER_PLATFORM_WIN32_NT
+            GuestMemory.writeGuest16(versionInfoPointer + 0x114, 0x100); // SuiteMask
+            GuestMemory.writeGuest8(versionInfoPointer + 0x116, 1); // VER_NT_WORKSTATION
+            return 0;
+        },
+        // Feature configuration: nenhuma feature registrada no sistema — a
+        // resposta REAL do NT para feature desconhecida e' STATUS_NOT_FOUND
+        // (o driver cai no caminho default, como num Windows sem a feature)
+        (_featureId, _changeStampType, _changeStampPointer, _configBuffer,
+         _configBufferSize) => 0xC0000225 | 0,   // STATUS_NOT_FOUND
+        // RtlQueryFeatureConfigurationChangeStamp() -> u64: 0 (nada mudou)
+        () => 0,
+        // RtlRegisterFeatureConfigurationChangeNotification(callback, ctx,
+        // outHandlePtr): registra de verdade; a notificacao dispararia numa
+        // mudanca de feature (nenhuma hoje — registrar e' o comportamento real)
+        (callbackPointer, contextPointer, outHandlePointer) => {
+            featureConfigurationNotifications.push(
+                { callbackPointer: callbackPointer >>> 0,
+                  contextPointer: contextPointer >>> 0 });
+            if (outHandlePointer)
+                GuestMemory.writeGuest64(outHandlePointer,
+                                         callbackPointer >>> 0);
+            return 0;
+        },
+        // RtlUnregisterFeatureConfigurationChangeNotification(handle)
+        (handlePointer) => {
+            const index = featureConfigurationNotifications.findIndex(
+                entry => entry.callbackPointer === (handlePointer >>> 0));
+            if (index < 0) return 0xC0000225 | 0;
+            featureConfigurationNotifications.splice(index, 1);
+            return 0;
+        },
+        // RtlTimeToTimeFields(timePtr u64 FILETIME, outTimeFieldsPtr):
+        // conversao civil real (algoritmo de dias-desde-1601; weekday: 1601-
+        // 01-01 foi segunda — no NT domingo=0, entao ((dias+1)%7))
+        (timePointer, timeFieldsPointer) => {
+            const filetime = GuestMemory.readGuest64(timePointer);
+            const totalSeconds = Math.floor(filetime / 10000000);
+            const days = Math.floor(totalSeconds / 86400);
+            const secondsOfDay = totalSeconds % 86400;
+            // civil_from_days (Howard Hinnant) com epoca em 1601-01-01
+            const z = days + 719468;
+            const era = Math.floor(z / 146097);
+            const dayOfEra = z - era * 146097;
+            const yearOfEra = Math.floor(
+                (dayOfEra - Math.floor(dayOfEra / 1460) +
+                 Math.floor(dayOfEra / 36524) -
+                 Math.floor(dayOfEra / 146096)) / 365);
+            const year = yearOfEra + era * 400;
+            const dayOfYear = dayOfEra - (365 * yearOfEra +
+                Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100));
+            const monthPrime = Math.floor((5 * dayOfYear + 2) / 153);
+            const day = dayOfYear - Math.floor((153 * monthPrime + 2) / 5) + 1;
+            const month = monthPrime + (monthPrime < 10 ? 3 : -9);
+            const fullYear = year + (month <= 2 ? 1 : 0);
+            const fields = [fullYear, month, day,
+                            Math.floor(secondsOfDay / 3600),
+                            Math.floor((secondsOfDay % 3600) / 60),
+                            secondsOfDay % 60,
+                            Math.floor((filetime % 10000000) / 10000),
+                            (days + 1) % 7];
+            for (let i = 0; i < 8; i++)
+                GuestMemory.writeGuest16(timeFieldsPointer + i * 2, fields[i]);
+            return 0;
+        },
+        // RtlUpcaseUnicodeChar(wchar) -> maiuscula (ASCII + Latin-1 basico)
+        (character) => {
+            const code = character & 0xFFFF;
+            if (code >= 0x61 && code <= 0x7A) return code - 0x20;
+            if (code >= 0xE0 && code <= 0xFE && code !== 0xF7) return code - 0x20;
+            return code;
+        },
+        // RtlxAnsiStringToUnicodeSize(ansiStringPtr) -> bytes wide com NUL
+        (ansiStringPointer) => {
+            const length = GuestMemory.readGuest16(ansiStringPointer);
+            return (length + 1) * 2;
+        },
+        // RtlCreateSystemVolumeInformationFolder(volumeRootUniPtr): cria a
+        // pasta "System Volume Information" no volume (FILE_DIRECTORY_FILE |
+        // OPEN_IF, atributos SYSTEM|HIDDEN) pelo caminho real do ZwCreateFile
+        (volumeRootPointer) => {
+            const volumePath = GuestStrings.readUnicodeString(volumeRootPointer);
+            const folderPath = volumePath +
+                (volumePath.endsWith('\\') ? '' : '\\') +
+                'System Volume Information';
+            const status = ZwExports.createFileByName(
+                folderPath, 3 /* FILE_OPEN_IF */, 1 /* FILE_DIRECTORY_FILE */,
+                0x6 /* SYSTEM|HIDDEN */);
+            if (status !== 0)
+                os.debugPrint('[rtl] System Volume Information em ' + volumePath +
+                              ' -> 0x' + (status >>> 0).toString(16));
+            return status;
+        },
+        // _strupr(strPtr): uppercase ASCII in-place; retorna o ponteiro
+        (stringPointer) => {
+            let cursor = stringPointer >>> 0;
+            for (;;) {
+                const byte = GuestMemory.readGuest8(cursor);
+                if (byte === 0) break;
+                if (byte >= 0x61 && byte <= 0x7A)
+                    GuestMemory.writeGuest8(cursor, byte - 0x20);
+                cursor++;
+            }
+            return stringPointer;
+        },
+        // _vsnprintf(buf, count, fmt, vaListPtr): printf ANSI com va_list
+        // real (x64: ponteiro p/ os args na pilha do chamador)
+        (bufferPointer, count, formatPointer, vaListPointer) => {
+            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const args = [];
+            for (let i = 0; i < 8; i++)
+                args.push(GuestMemory.readGuest64(vaListPointer + i * 8));
+            const text = GuestStrings.formatGuestText(formatText, args);
+            const writable = Math.min(text.length, (count >>> 0) - 1);
+            for (let i = 0; i < writable; i++)
+                GuestMemory.writeGuest8(bufferPointer + i, text.charCodeAt(i));
+            if (count > 0)
+                GuestMemory.writeGuest8(bufferPointer + writable, 0);
+            return writable;
+        },
+        // vDbgPrintExWithPrefix(prefixPtr, componentId, level, fmt, vaList):
+        // formata ANSI com va_list e loga com o prefixo (estilo WPP/ETW)
+        (prefixPointer, _componentId, _level, formatPointer, vaListPointer) => {
+            const prefix = prefixPointer
+                ? GuestStrings.readGuestCString(prefixPointer) : '';
+            const formatText = GuestStrings.readGuestCString(formatPointer);
+            const args = [];
+            for (let i = 0; i < 8; i++)
+                args.push(GuestMemory.readGuest64(vaListPointer + i * 8));
+            const text = GuestStrings.formatGuestText(formatText, args);
+            os.debugPrint(prefix + text.replace(/\r?\n$/, ''));
+            return 0;
+        },
+        // wcsstr(haystackWide, needleWide) -> ponteiro da 1a ocorrencia ou 0
+        (haystackPointer, needlePointer) => {
+            const haystack = GuestStrings.readGuestWideString(haystackPointer);
+            const needle = GuestStrings.readGuestWideString(needlePointer);
+            const index = haystack.indexOf(needle);
+            return index < 0 ? 0 : haystackPointer + index * 2;
         },
     ],
 };

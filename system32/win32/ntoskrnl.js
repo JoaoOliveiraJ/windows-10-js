@@ -12,10 +12,15 @@ const IoTimer = require('ntos/io/io-timer');
 
 const exportNames = [];
 const exportHandlers = [];
+// exports de DADO (variaveis globais do kernel: KiBugCheckData, IoFileObjectType
+// etc.): o resolvedor devolve { address } — a IAT do driver recebe o endereco
+// REAL do simbolo, nao um trampolim de funcao
+const dataExportGetters = {};
 for (const groupName of GROUP_ORDER) {
     const group = require('win32/ntoskrnl/' + groupName);
     exportNames.push(...group.names);
     exportHandlers.push(...group.handlers);
+    if (group.dataExports) Object.assign(dataExportGetters, group.dataExports);
 }
 // guarda de integridade da ABI: name sem handler (ou vice-versa) desalinha
 // TODOS os ids dali pra frente — falhar alto no boot em vez de chamar errado
@@ -28,6 +33,8 @@ if (exportNames.length !== exportHandlers.length) {
 function lookup(dllName, functionName) {
     // a tabela e' a mesma para ntoskrnl.exe e HAL.dll (no NT de verdade,
     // KeQueryPerformanceCounter/KeStallExecutionProcessor etc. saem da HAL)
+    const dataExportGetter = dataExportGetters[functionName];
+    if (dataExportGetter) return { address: dataExportGetter() };
     const index = exportNames.indexOf(functionName);
     return index < 0 ? -1 : 32 + index;
 }

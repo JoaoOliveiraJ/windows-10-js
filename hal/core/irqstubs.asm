@@ -20,6 +20,8 @@
 %define KBD_DATA    0x81408
 %define LAPIC_EOI   0xFEE000B0
 
+extern jsos_irq_native_dispatch
+
 global irq_stub_table
 
 align 16
@@ -271,6 +273,64 @@ irq_common:
     ret
 
 .is_irq:
+    ; ---- despacho imediato de ISR nativa (drivers Windows reais) ----------
+    ; o C (jsos_irq_native_dispatch) decide: se o vetor tem cadeia KINTERRUPT
+    ; e o IRQL atual < DIRQL do vetor, a ISR roda AGORA (preempcao estilo
+    ; NT/HAL). Salva o estado COMPLETO (o caminho C->JS->ISR nativa clobbera
+    ; tudo: GP regs + XMM0-15).
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 0x100
+    movdqu [rsp + 0x00], xmm0
+    movdqu [rsp + 0x10], xmm1
+    movdqu [rsp + 0x20], xmm2
+    movdqu [rsp + 0x30], xmm3
+    movdqu [rsp + 0x40], xmm4
+    movdqu [rsp + 0x50], xmm5
+    movdqu [rsp + 0x60], xmm6
+    movdqu [rsp + 0x70], xmm7
+    movdqu [rsp + 0x80], xmm8
+    movdqu [rsp + 0x90], xmm9
+    movdqu [rsp + 0xA0], xmm10
+    movdqu [rsp + 0xB0], xmm11
+    movdqu [rsp + 0xC0], xmm12
+    movdqu [rsp + 0xD0], xmm13
+    movdqu [rsp + 0xE0], xmm14
+    movdqu [rsp + 0xF0], xmm15
+    mov ebx, edi                  ; o vetor sobrevive ao call em rbx
+    mov rbp, rsp
+    and rsp, -16                  ; alinhamento SysV/MS p/ o call C
+    call jsos_irq_native_dispatch ; edi = vetor (arg1)
+    mov rsp, rbp
+    mov edi, ebx                  ; restaura o vetor p/ o fluxo abaixo
+    movdqu xmm0, [rsp + 0x00]
+    movdqu xmm1, [rsp + 0x10]
+    movdqu xmm2, [rsp + 0x20]
+    movdqu xmm3, [rsp + 0x30]
+    movdqu xmm4, [rsp + 0x40]
+    movdqu xmm5, [rsp + 0x50]
+    movdqu xmm6, [rsp + 0x60]
+    movdqu xmm7, [rsp + 0x70]
+    movdqu xmm8, [rsp + 0x80]
+    movdqu xmm9, [rsp + 0x90]
+    movdqu xmm10, [rsp + 0xA0]
+    movdqu xmm11, [rsp + 0xB0]
+    movdqu xmm12, [rsp + 0xC0]
+    movdqu xmm13, [rsp + 0xD0]
+    movdqu xmm14, [rsp + 0xE0]
+    movdqu xmm15, [rsp + 0xF0]
+    add rsp, 0x100
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+
     ; IRQ1 (teclado): le o scancode e empilha no ring buffer — EXCETO quando
     ; um port driver nativo (i8042prt) conectou o vetor: o ISR nativo e' quem
     ; le a porta 0x60 (byte de controle em 0x81510, ver ke/interrupt-object.js)

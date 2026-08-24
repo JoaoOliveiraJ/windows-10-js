@@ -11,6 +11,11 @@ const GuestStrings = require('win32/guest-strings');
 const providers = new Map();   // handle -> { guidText, enabled }
 let nextProviderHandle = 0x900;
 
+// GUID da atividade corrente (EtwActivityIdControl GET/SET) + estado do
+// gerador de uuid (CREATE_ID)
+let etwCurrentActivityIdPointer = 0;
+let etwUuidState = 0;
+
 function guidToText(guidPointer) {
     let text = '';
     for (let i = 0; i < 16; i++)
@@ -26,6 +31,7 @@ module.exports = {
         'EtwWriteTransfer',
         'EtwSetInformation',
         'EtwRegisterClassicProvider',
+        'EtwActivityIdControl',        // (controlCode, activityIdPtr)
     ],
     handlers: [
         // EtwRegister(providerGuidPtr, enableCallback, callbackCtx, outHandle)
@@ -75,6 +81,52 @@ module.exports = {
             providers.set(handle, { guidText: guidToText(guidPointer),
                                     enabled: true });
             GuestMemory.writeGuest64(outHandlePointer, handle);
+            return 0;
+        },
+        // EtwActivityIdControl(controlCode, activityIdPtr): GET_ID=1, SET_ID=2,
+        // CREATE_ID=3, GET_SET_ID=4, CREATE_SET_ID=5 (evntprov.h) — le/grava/
+        // gera o GUID de 16 bytes da atividade corrente (estado real)
+        (controlCode, activityIdPointer) => {
+            const GuestMemoryRef = GuestMemory;
+            if (!etwCurrentActivityIdPointer)
+                etwCurrentActivityIdPointer = GuestMemoryRef.guestAllocBytes(16);
+            const copyFromCurrent = () => {
+                for (let i = 0; i < 16; i++)
+                    GuestMemoryRef.writeGuest8(activityIdPointer + i,
+                        GuestMemoryRef.readGuest8(etwCurrentActivityIdPointer + i));
+            };
+            const copyToCurrent = () => {
+                for (let i = 0; i < 16; i++)
+                    GuestMemoryRef.writeGuest8(etwCurrentActivityIdPointer + i,
+                        GuestMemoryRef.readGuest8(activityIdPointer + i));
+            };
+            const generateInto = () => {
+                // uuid v4 (xorshift32 semeado no TSC — mesmo padrao do Ex)
+                etwUuidState ^= etwUuidState << 13;
+                etwUuidState ^= etwUuidState >>> 17;
+                etwUuidState ^= etwUuidState << 5;
+                if (!etwUuidState) etwUuidState = (os.rdtsc() >>> 0) || 0x2545F491;
+                for (let i = 0; i < 4; i++) {
+                    etwUuidState ^= etwUuidState << 13;
+                    etwUuidState ^= etwUuidState >>> 17;
+                    etwUuidState ^= etwUuidState << 5;
+                    GuestMemoryRef.writeGuest32(activityIdPointer + i * 4,
+                                                etwUuidState >>> 0);
+                }
+                const byte6 = GuestMemoryRef.readGuest8(activityIdPointer + 6);
+                GuestMemoryRef.writeGuest8(activityIdPointer + 6,
+                                           (byte6 & 0x0F) | 0x40);
+                const byte8 = GuestMemoryRef.readGuest8(activityIdPointer + 8);
+                GuestMemoryRef.writeGuest8(activityIdPointer + 8,
+                                           (byte8 & 0x3F) | 0x80);
+            };
+            const code = controlCode >>> 0;
+            if (code === 1) copyFromCurrent();                    // GET_ID
+            else if (code === 2) copyToCurrent();                 // SET_ID
+            else if (code === 3) generateInto();                  // CREATE_ID
+            else if (code === 4) { copyFromCurrent(); copyToCurrent(); }
+            else if (code === 5) { generateInto(); copyToCurrent(); }
+            else return 0xC000000D | 0;   // STATUS_INVALID_PARAMETER
             return 0;
         },
     ],

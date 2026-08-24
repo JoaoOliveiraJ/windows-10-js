@@ -20,6 +20,7 @@ module.exports = {
         'WmiSystemControl',
         'WmiCompleteRequest',
         'WmiTraceMessage',
+        'WmiTraceMessageVa',
         'WmiQueryTraceInformation',
     ],
     handlers: [
@@ -53,6 +54,11 @@ module.exports = {
             os.debugPrint('[wmitrace] ' + text.replace(/\r?\n$/, ''));
             return 0;
         },
+        // WmiTraceMessageVa(loggerHandle, flags, guid, msgId, vaList): sem
+        // nenhuma sessao de trace ativa, o loggerHandle nao existe — o NT
+        // responde STATUS_INVALID_HANDLE (drivers ignoram o retorno)
+        (_loggerHandle, _messageFlags, _messageGuidPointer, _messageNumber,
+         _vaListPointer) => 0xC0000008 | 0,   // STATUS_INVALID_HANDLE
         // WmiQueryTraceInformation(infoClass, out, size, outLen, handle):
         // TRACE_ENABLE_INFO — nenhuma sessao ativa: devolve flags zerados
         (_infoClass, outBufferPointer, bufferSize, outLengthPointer) => {

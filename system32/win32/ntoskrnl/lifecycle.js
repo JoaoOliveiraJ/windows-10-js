@@ -101,8 +101,7 @@ function getDriverExport(driverName, exportName) {
 
 // carrega um .sys do VFS: PE loader + DriverEntry nativo com o caminho de
 // registry do servico (como o NT passa \Registry\Machine\System\Services\X)
-function loadDriver(filePath) {
-    const MemoryFileSystem = require('ntos/fs/memory-file-system');
+function loadDriver(filePath) {    const MemoryFileSystem = require('ntos/fs/memory-file-system');
     const driverBytes = MemoryFileSystem.readBytes(filePath);
     if (!driverBytes) throw new Error('driver nao encontrado: ' + filePath);
     const imageInfo = PeLoader.load(driverBytes);
@@ -178,7 +177,55 @@ function callAddDevice(driverName, pdoDevicePointer) {
     return status | 0;
 }
 
+// ---- carga por MODULO (dependencia de import, estilo MmLoadSystemImage) ----
+// quando um driver importa de OUTRO .sys (disk.sys -> CLASSPNP.SYS, atapi.sys
+// -> ataport.SYS), o loader PE pede o export ao resolvedor de modulos: aqui o
+// modulo dependente e' carregado por completo (PE + DriverEntry, como o NT
+// faz com as dependencias ANTES do entry do importador) e seu driver node
+// fica disponivel para a resolucao do export (endereco nativo direto).
+const modulesBeingLoaded = new Set();   // guarda de ciclo (A importa B que importa A)
+
+// chama o DllInitialize(registryPath) do modulo — o initializer DLL-style
+// que o loader do NT dispara nos modulos carregados como DEPENDENCIA (o
+// DriverEntry de um "kernel DLL" como ataport/classpnp/wmilib e' vazio; a
+// inicializacao real — listas globais, EM rules — acontece no DllInitialize)
+function callDllInitialize(driverName, exports) {
+    const dllInitializeAddress = exports['DllInitialize'];
+    if (!dllInitializeAddress) return;
+    const registryPath = '\\Registry\\Machine\\System\\Services\\' + driverName;
+    const pathBuffer = GuestMemory.guestAllocBytes(registryPath.length * 2 + 2);
+    GuestStrings.writeGuestWideString(pathBuffer, registryPath);
+    const pathStruct = GuestMemory.guestAllocBytes(16);
+    GuestMemory.writeGuest16(pathStruct, registryPath.length * 2);
+    GuestMemory.writeGuest16(pathStruct + 2, registryPath.length * 2 + 2);
+    GuestMemory.writeGuest64(pathStruct + 8, pathBuffer);
+    os.debugPrint('[ntoskrnl] DllInitialize de ' + driverName);
+    const status = os.execMsAbi(dllInitializeAddress, pathStruct) | 0;
+    if (status !== 0)
+        throw new Error('DllInitialize de ' + driverName + ' retornou 0x' +
+                        (status >>> 0).toString(16));
+}
+
+function ensureModuleDriverLoaded(moduleFileName) {
+    const moduleKey = moduleFileName.toLowerCase();
+    const driverName = moduleKey.replace(/\.sys$/, '');
+    const existingNode = ObjectManager.lookup('\\Driver\\' + driverName);
+    if (existingNode) return existingNode;
+    if (modulesBeingLoaded.has(moduleKey))
+        throw new Error('dependencia circular de driver: ' + moduleFileName);
+    modulesBeingLoaded.add(moduleKey);
+    try {
+        loadDriver('/' + moduleKey);
+    } finally {
+        modulesBeingLoaded.delete(moduleKey);
+    }
+    const node = ObjectManager.lookup('\\Driver\\' + driverName);
+    if (node) callDllInitialize(driverName, node.data.exports);
+    return node;
+}
+
 module.exports = { beginDriver, endDriver, loadDriver, unloadDriver,
                    getCurrentDriverNode, setCurrentDriverNode, getDriverExport,
                    nodeByDriverObjectPointer, registerReinitialization,
-                   runReinitializationRoutines, callAddDevice };
+                   runReinitializationRoutines, callAddDevice,
+                   ensureModuleDriverLoaded };

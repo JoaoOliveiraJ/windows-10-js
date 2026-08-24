@@ -18,7 +18,7 @@ global win32_stubs
 global win32_stub_max
 global exec_msabi
 
-%define MAX_WIN32 320
+%define MAX_WIN32 512
 
 align 16
 win32_stubs:

@@ -17,6 +17,11 @@ const KDPC = NtAbi.KDPC;
 
 const dpcQueue = [];   // { dpcPointer } (campos lidos da KDPC real)
 
+// DPCs do proprio kernel JS (ex: o wrapper do EX_TIMER): a "rotina" e' uma
+// funcao JS nossa em vez de codigo nativo — maquinaria interna do kernel,
+// como um callback de driver interno do NT (nao chega a ser ABI de drivers)
+const jsRoutineByDpc = new Map();   // dpcPointer -> funcao JS
+
 function readField(dpcPointer, offset) {
     return os.readPhysical32(dpcPointer + offset) >>> 0;
 }
@@ -36,6 +41,13 @@ function initializeDpc(dpcPointer, routinePointer, contextPointer) {
     writeField(dpcPointer, KDPC.SYSARG1, 0);
     writeField(dpcPointer, KDPC.SYSARG2, 0);
     writeField(dpcPointer, KDPC.DPC_DATA, 0);   // nao enfileirado
+}
+
+// variante interna: DPC cuja rotina e' JS (uso do proprio kernel, nao de
+// drivers nativos — ver comentario no mapa acima)
+function initializeJsDpc(dpcPointer, jsFunction, contextPointer) {
+    initializeDpc(dpcPointer, 0, contextPointer);
+    jsRoutineByDpc.set(dpcPointer >>> 0, jsFunction);
 }
 
 // KeInsertQueueDpc(dpc, sysArg1, sysArg2): grava os SystemArguments na KDPC
@@ -71,11 +83,14 @@ function runQueue() {
         const sysArg2 = readField(dpcPointer, KDPC.SYSARG2);
         const oldIrql = Irql.getIrql();
         Irql.raiseIrql(Irql.DISPATCH_LEVEL);
-        os.execMsAbi(routine, dpcPointer, context, sysArg1, sysArg2);
+        const jsFunction = jsRoutineByDpc.get(dpcPointer >>> 0);
+        if (jsFunction) jsFunction(dpcPointer, context, sysArg1, sysArg2);
+        else os.execMsAbi(routine, dpcPointer, context, sysArg1, sysArg2);
         Irql.lowerIrql(oldIrql);
     }
 }
 
 function pending() { return dpcQueue.length; }
 
-module.exports = { initializeDpc, insertQueueDpc, removeQueueDpc, runQueue, pending };
+module.exports = { initializeDpc, initializeJsDpc, insertQueueDpc,
+                   removeQueueDpc, runQueue, pending };

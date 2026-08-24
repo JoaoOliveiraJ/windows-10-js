@@ -28,7 +28,7 @@ kernel_sectors: dw 0            ; patcheado pelo build (offset 3)
 %define KERNEL_LBA   65
 %define KERNEL_DEST  0x100000
 ; rsp % 16 == 8 na entrada da funcao C (ABI SysV, como se viesse de um call)
-%define STACK_TOP    0x300008
+%define STACK_TOP    0x500008
 
 ; --- serial putc, MODO REAL 16-bit apenas (AL = char; clobbera dx) --------
 sputc16:

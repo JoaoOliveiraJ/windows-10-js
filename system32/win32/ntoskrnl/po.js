@@ -16,12 +16,25 @@ function deviceOfIrp(ioRequestPointer) {
     return GuestMemory.readGuest32(stackPointer + NtAbi.IO_STACK_LOCATION.DEVICE_OBJECT);
 }
 
+// callbacks de power setting (PoRegisterPowerSettingCallback):
+// { settingGuidText, callbackPointer, contextPointer, devicePointer } —
+// disparados quando um setting muda (power-manager; hoje nenhum muda)
+const powerSettingCallbacks = [];
+
+// contadores de idle por device (PoRegisterDeviceForIdleDetection)
+const idleCounterByDevice = new Map();
+
 module.exports = {
     names: [
         'PoSetPowerState',       // (device, POWER_STATE_TYPE, POWER_STATE) -> anterior
         'PoStartNextPowerIrp',   // (irp)
         'PoCallDriver',          // (device, irp) -> NTSTATUS
         'PoRequestPowerIrp',     // (device, minor, state, completionPtr, ctxPtr, outIrpPtr)
+        'PoRegisterPowerSettingCallback',   // (dev, guid, cb, ctx, outHandle)
+        'PoUnregisterPowerSettingCallback', // (handle)
+        'PoQueryWatchdogTime',              // (dev, outSeconds) -> BOOLEAN
+        'PoRegisterDeviceForIdleDetection', // (dev, cons, perf, state) -> PULONG
+        'PoSetDeviceBusyEx',                // (idlePointer)
     ],
     handlers: [
         // PoSetPowerState(devicePtr, type, state) -> POWER_STATE anterior
@@ -57,10 +70,57 @@ module.exports = {
             if (outIrpPointer) GuestMemory.writeGuest64(outIrpPointer, irpAddress);
             const status = IoManager.dispatchNativePowerIrp(devicePointer,
                                                             irpAddress);
-            if (completionPointer)
-                os.execMsAbi(completionPointer, devicePointer, irpAddress,
-                             contextPointer) ;
+            // a completion do power IRP tem a assinatura REAL do wdm.h:
+            // (device, minorFunction, powerState, context, ioStatusBlock)
+            if (completionPointer) {
+                const ioStatusPointer = irpAddress + NtAbi.IRP.IO_STATUS;
+                os.execMsAbi(completionPointer, devicePointer,
+                             minorFunction >>> 0, powerState >>> 0,
+                             contextPointer, ioStatusPointer);
+            }
             GuestMemory.guestFreeBytes(irpAddress);
+            return 0;
+        },
+        // PoRegisterPowerSettingCallback(dev, guidPtr, callback, context,
+        // outHandlePtr): registro real — dispararia numa mudanca de setting
+        (devicePointer, settingGuidPointer, callbackPointer, contextPointer,
+         outHandlePointer) => {
+            const entry = { callbackPointer: callbackPointer >>> 0,
+                            contextPointer: contextPointer >>> 0,
+                            devicePointer: devicePointer >>> 0,
+                            settingGuidPointer: settingGuidPointer >>> 0 };
+            powerSettingCallbacks.push(entry);
+            if (outHandlePointer) GuestMemory.writeGuest64(outHandlePointer,
+                                                           callbackPointer >>> 0);
+            return 0;
+        },
+        // PoUnregisterPowerSettingCallback(handle)
+        (handlePointer) => {
+            const index = powerSettingCallbacks.findIndex(
+                entry => entry.callbackPointer === (handlePointer >>> 0));
+            if (index < 0) return 0xC0000225 | 0;
+            powerSettingCallbacks.splice(index, 1);
+            return 0;
+        },
+        // PoQueryWatchdogTime(dev, outSecondsPtr) -> 0: nenhum watchdog timer
+        // armado no sistema (resposta real; *seconds = 0)
+        (_devicePointer, outSecondsPointer) => {
+            if (outSecondsPointer)
+                GuestMemory.writeGuest32(outSecondsPointer, 0);
+            return 0;
+        },
+        // PoRegisterDeviceForIdleDetection(dev, conservationTime,
+        // performanceTime, state) -> PULONG: o contador de idle real do
+        // device (o NT devolve NULL quando nao suporta — nos suportamos:
+        // o contador e' o mecanismo, zerado por PoSetDeviceBusyEx)
+        (devicePointer, _conservationIdleTime, _performanceIdleTime, _state) => {
+            const counterPointer = GuestMemory.guestAllocBytes(4);
+            idleCounterByDevice.set(devicePointer >>> 0, counterPointer);
+            return counterPointer;
+        },
+        // PoSetDeviceBusyEx(idlePointer): reseta o contador de idle
+        (idlePointer) => {
+            GuestMemory.writeGuest32(idlePointer, 0);
             return 0;
         },
     ],

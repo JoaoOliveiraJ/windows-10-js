@@ -11,6 +11,7 @@ const ObjectManager = require('ntos/ob/object-manager');
 const GuestMemory = require('win32/guest-memory');
 const NtAbi = require('win32/nt-abi');
 const IoManager = require('ntos/io/io-manager');
+const DeviceResources = require('ntos/io/device-resources');
 
 const CONFIG_ADDRESS = 0xCF8;
 const CONFIG_DATA = 0xCFC;
@@ -126,6 +127,23 @@ function answerNativePnpIrp(devicePointer, irpPointer) {
 const devices = [];   // { bus, device, func, vendorId, deviceId, classCode,
                       //   subClass, progIf, irqLine, bars[], node, resourceListPtr }
 
+// mede o tamanho de um BAR (tecnica padrao: escreve all-ones, le a mascara,
+// restaura) — o CM_RESOURCE_LIST real carrega o comprimento de cada recurso
+function sizeBar(bus, device, func, barOffset, originalValue) {
+    os.writePort32(CONFIG_ADDRESS, configAddress(bus, device, func, barOffset));
+    os.writePort32(CONFIG_DATA, 0xFFFFFFFF);
+    const mask = readConfig32(bus, device, func, barOffset);
+    os.writePort32(CONFIG_ADDRESS, configAddress(bus, device, func, barOffset));
+    os.writePort32(CONFIG_DATA, originalValue >>> 0);
+    if (!mask || mask === 0xFFFFFFFF) return 0;
+    if (originalValue & 1) {   // porta de I/O: bits [31:2] endereco
+        const base = mask & 0xFFFFFFFC;
+        return (~base + 1) & 0xFFFF;
+    }
+    const base = mask & 0xFFFFFFF0;
+    return (~base + 1) >>> 0;
+}
+
 function enumerate() {
     devices.length = 0;
     let pdoIndex = 0;
@@ -140,8 +158,18 @@ function enumerate() {
                 const bars = [];
                 for (let bar = 0; bar < 6; bar++) {
                     const value = readConfig32(bus, device, func, 0x10 + bar * 4);
-                    if (value && value !== 0xFFFFFFFF)
-                        bars.push({ index: bar, value });
+                    if (!value || value === 0xFFFFFFFF) continue;
+                    const isMemory64 = !(value & 1) && ((value >> 1) & 3) === 2;
+                    const size = sizeBar(bus, device, func, 0x10 + bar * 4, value);
+                    if (isMemory64) {
+                        const highValue = readConfig32(bus, device, func,
+                                                       0x10 + (bar + 1) * 4);
+                        bars.push({ index: bar, value, size,
+                                    highValue, memory64: true });
+                        bar++;   // BAR de 64 bits consome dois slots
+                        continue;
+                    }
+                    bars.push({ index: bar, value, size });
                 }
                 devices.push({
                     bus, device, func, vendorId, deviceId,
@@ -164,15 +192,42 @@ function enumerate() {
 // CM_RESOURCE_LIST que o PnP entrega no START_DEVICE
 function resourcesOf(entry) {
     const resources = [];
+    // controlador IDE em modo COMPATIBILITY (legado): os BARs 0-3 leem zero e
+    // os canais usam portas/IRQs fixas — o pci.sys do NT SINTETIZA esses
+    // recursos no CM_RESOURCE_LIST do PDO. NOTA ataport: o parser de inter-
+    // rupcao do canal (0x27a44) usa o ULTIMO descritor de IRQ da lista — o
+    // IRQ do canal primario (14) fica por ultimo p/ o canal 0 conectar certo
+    if (entry.classCode === 0x01 && entry.subClass === 0x01 &&
+        !(entry.progIf & 0x04)) {
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x170, length: 8, flags: 0 });
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x376, length: 1, flags: 0 });
+        resources.push({ type: CmResourceType.INTERRUPT,
+                         level: 15, vector: 0x20 + 15, affinity: 0xFFFFFFFF,
+                         flags: 0x00 });
+    }
+    if (entry.classCode === 0x01 && entry.subClass === 0x01 &&
+        !(entry.progIf & 0x01)) {
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x1F0, length: 8, flags: 0 });
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x3F6, length: 1, flags: 0 });
+        resources.push({ type: CmResourceType.INTERRUPT,
+                         level: 14, vector: 0x20 + 14, affinity: 0xFFFFFFFF,
+                         flags: 0x00 });   // edge-triggered (ISA legado)
+    }
     for (const bar of entry.bars) {
         if (bar.value & 1) {   // bit 0 = I/O port
             resources.push({ type: CmResourceType.PORT,
-                             start: bar.value & 0xFFFFFFFC, length: 0,
-                             flags: 0 });
+                             start: bar.value & 0xFFFFFFFC,
+                             length: bar.size || 0, flags: 0 });
         } else {               // memoria MMIO
+            const start = bar.memory64
+                ? (bar.value & 0xFFFFFFF0) + bar.highValue * 0x100000000
+                : bar.value & 0xFFFFFFF0;
             resources.push({ type: CmResourceType.MEMORY,
-                             start: bar.value & 0xFFFFFFF0, length: 0,
-                             flags: 0 });
+                             start, length: bar.size || 0, flags: 0 });
         }
     }
     if (entry.irqLine)
@@ -199,6 +254,10 @@ function createPdos() {
         GuestMemory.writeGuest16(pdoPointer + DEVICE.SIZE, DEVICE.STRUCT_SIZE);
         GuestMemory.writeGuest32(pdoPointer + DEVICE.REFERENCE_COUNT, 1);
         GuestMemory.writeGuest8(pdoPointer + DEVICE.STACK_SIZE, 1);
+        // o CM_RESOURCE_LIST fica localizavel pelo ponteiro do PDO (o
+        // IoConnectInterruptEx LINE_BASED deriva a IRQ daqui, como o NT)
+        DeviceResources.registerDeviceResources(pdoPointer,
+                                                entry.resourceListPointer);
         const node = ObjectManager.createObject('\\Device', entry.pdoName, 'Device', {
             pdo: true,
             pci: entry,

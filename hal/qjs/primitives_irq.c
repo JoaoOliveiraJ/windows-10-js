@@ -28,6 +28,82 @@ static JSValue prim_getIrqStubTable(JSContext *ctx, JSValueConst this_val,
     return JS_NewFloat64(ctx, (double)(uintptr_t)irq_stub_table);
 }
 
+/* ---- despacho imediato de ISR nativa (drivers Windows) -------------------
+ * Chamado pelo stub asm de IRQ (irqstubs.asm) com o vetor. Se o vetor tem
+ * uma cadeia KINTERRUPT nativa (dirql != 0 na tabela compartilhada) e o IRQL
+ * atual e' menor que o DIRQL do vetor, despacha AGORA (como o HAL do NT
+ * preemptando) — senao fica pendente p/ o dispatchPending do idle loop.
+ *
+ * Mapa compartilhado com o JS:
+ *   0x81528: u32 currentIrql (publicado por ntos/ke/irql.js)
+ *   0x81600: u32 dirql[256]  (publicado por ntos/ke/interrupt-object.js) ---- */
+
+#include "quickjs_host.h"
+
+extern JSContext *js_host_ctx(void);
+extern void jsos_dump_exception(JSContext *ctx);
+
+#define JSOS_CURRENT_IRQL_ADDR  0x81528u
+#define JSOS_IRQ_DIRQL_TABLE    0x81600u
+#define JSOS_SHARED_FRAME_ADDR  0x81530u
+#define JSOS_TSC_HZ_ADDR        0x81534u
+#define JSOS_TSC_AT_BOOT_ADDR   0x81538u
+#define JSOS_BOOT_NT100NS_ADDR  0x81540u
+
+/* atualizacao preemptiva do KUSER_SHARED_DATA: roda a cada IRQ do timer
+ * (0x40), DENTRO do stub — o SystemTime/TickCount avancam mesmo durante
+ * spins nativos de drivers (o timeout do atapi le esse campo; o nosso idle
+ * loop cooperativo nao roda durante o spin, congelando o relogio) */
+static void jsos_update_shared_times(uint32_t vector) {
+    uint32_t frame, tscHz, lo, hi;
+    uint64_t tscAtBoot, bootNt100ns, now, systemTime100ns, tickCountMs;
+    if (vector != 0x40) return;
+    frame = *(volatile uint32_t *)(uintptr_t)JSOS_SHARED_FRAME_ADDR;
+    tscHz = *(volatile uint32_t *)(uintptr_t)JSOS_TSC_HZ_ADDR;
+    if (!frame || !tscHz) return;
+    lo = *(volatile uint32_t *)(uintptr_t)JSOS_TSC_AT_BOOT_ADDR;
+    hi = *(volatile uint32_t *)(uintptr_t)(JSOS_TSC_AT_BOOT_ADDR + 4);
+    tscAtBoot = (uint64_t)lo + ((uint64_t)hi << 32);
+    lo = *(volatile uint32_t *)(uintptr_t)JSOS_BOOT_NT100NS_ADDR;
+    hi = *(volatile uint32_t *)(uintptr_t)(JSOS_BOOT_NT100NS_ADDR + 4);
+    bootNt100ns = (uint64_t)lo + ((uint64_t)hi << 32);
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    now = (uint64_t)lo + ((uint64_t)hi << 32);
+    systemTime100ns = bootNt100ns + (now - tscAtBoot) * 10000000ULL / tscHz;
+    tickCountMs = (now - tscAtBoot) * 1000ULL / tscHz;
+    /* SystemTime (+0x14) e TickCount (+0x320) do KUSER_SHARED_DATA */
+    *(volatile uint32_t *)(uintptr_t)(frame + 0x14) = (uint32_t)systemTime100ns;
+    *(volatile uint32_t *)(uintptr_t)(frame + 0x18) = (uint32_t)(systemTime100ns >> 32);
+    *(volatile uint32_t *)(uintptr_t)(frame + 0x320) = (uint32_t)tickCountMs;
+    *(volatile uint32_t *)(uintptr_t)(frame + 0x324) = (uint32_t)(tickCountMs >> 32);
+}
+
+void jsos_irq_native_dispatch(uint32_t vector) {
+    uint32_t currentIrql, dirql;
+    JSContext *ctx;
+    JSValue global, fn, arg, ret;
+
+    jsos_update_shared_times(vector);
+
+    currentIrql = *(volatile uint32_t *)(uintptr_t)JSOS_CURRENT_IRQL_ADDR;
+    dirql = *(volatile uint32_t *)(uintptr_t)(JSOS_IRQ_DIRQL_TABLE + vector * 4u);
+    if (!dirql || currentIrql >= dirql) return;   /* fica pendente */
+
+    ctx = js_host_ctx();
+    if (!ctx) return;
+    global = JS_GetGlobalObject(ctx);
+    fn = JS_GetPropertyStr(ctx, global, "__jsosIrqNativeDispatch");
+    if (JS_IsFunction(ctx, fn)) {
+        arg = JS_NewUint32(ctx, vector);
+        ret = JS_Call(ctx, fn, global, 1, (JSValueConst *)&arg);
+        if (JS_IsException(ret)) jsos_dump_exception(ctx);
+        JS_FreeValue(ctx, ret);
+        JS_FreeValue(ctx, arg);
+    }
+    JS_FreeValue(ctx, fn);
+    JS_FreeValue(ctx, global);
+}
+
 /* ---- os.readMsr/msr / os.writeMsr: acesso a MSRs (APIC base etc.) ---- */
 
 static JSValue prim_readMsr(JSContext *ctx, JSValueConst this_val,

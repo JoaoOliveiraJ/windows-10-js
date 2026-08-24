@@ -12,6 +12,11 @@ const PASSIVE_LEVEL = 0;
 const DISPATCH_LEVEL = 2;
 const HIGH_LEVEL = 15;
 
+// IRQL publicado p/ o despacho imediato de ISR nativa (lido pelo stub asm
+// via o C: so preempta quando currentIrql < DIRQL do vetor, como o HAL)
+const CURRENT_IRQL_ADDRESS = 0x81528;
+function publishIrql() { os.writePhysical32(CURRENT_IRQL_ADDRESS, currentIrql); }
+
 function getIrql() { return currentIrql; }
 
 function raiseIrql(newIrql) {
@@ -22,15 +27,20 @@ function raiseIrql(newIrql) {
     }
     const old = currentIrql;
     currentIrql = newIrql;
+    publishIrql();
     return old;
 }
 
 function lowerIrql(newIrql) {
     if (newIrql > currentIrql) {
-        os.debugPrint('[ke] BUGCHECK: KeLowerIrql para nivel maior');
+        os.debugPrint('[ke] BUGCHECK: KeLowerIrql para nivel maior (0x' +
+                      (newIrql >>> 0).toString(16) + ' | hi=0x' +
+                      Math.floor(newIrql / 0x100000000).toString(16) +
+                      ' > ' + currentIrql + ')');
         os.halt();
     }
     currentIrql = newIrql;
+    publishIrql();
 }
 
 module.exports = { PASSIVE_LEVEL, DISPATCH_LEVEL, HIGH_LEVEL,

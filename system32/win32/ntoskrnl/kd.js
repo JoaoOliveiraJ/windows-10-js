@@ -22,6 +22,7 @@ module.exports = {
         'KdRefreshDebuggerNotPresent',  // re-avalia a presenca do KD
         'KdChangeOption',               // query/set de opcoes do KD
         'DbgBreakPointWithStatus',      // int 3 com status (bugcheck sem KD)
+        'KdDebuggerNotPresent',         // -> BOOLEAN: nenhum KD anexado
     ],
     handlers: [
         // KdDebuggerEnabled() -> BOOLEAN (0 = sem debugger, estado real)
@@ -45,6 +46,10 @@ module.exports = {
             os.halt();
             return 0;
         },
+        // KdDebuggerNotPresent() -> 1: nenhum kernel debugger foi anexado no
+        // boot (sem /DEBUG no bootloader — estado real, mesma variavel do
+        // KdRefreshDebuggerNotPresent acima)
+        () => kdDebuggerNotPresent,
     ],
     kdDebuggerEnabled,
     kdDebuggerNotPresent,

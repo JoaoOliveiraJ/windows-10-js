@@ -37,6 +37,9 @@ function init() {
         os.debugPrint('[mm] FALHA: map shared user data');
         return false;
     }
+    // publica o frame p/ o C (a IRQ do timer atualiza o SystemTime aqui de
+    // forma preemptiva — ver jsos_irq_native_dispatch)
+    os.writePhysical32(0x81530, sharedFrame);
     updateSystemTimes();
     os.debugPrint('[mm] KUSER_SHARED_DATA mapeada (frame 0x' +
                   sharedFrame.toString(16) + ')');

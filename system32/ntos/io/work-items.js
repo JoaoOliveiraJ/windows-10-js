@@ -16,6 +16,10 @@ const WORKITEM = NtAbi.IO_WORKITEM;
 
 const workQueue = [];   // { itemPointer } (campos lidos do IO_WORKITEM real)
 
+// work items do proprio kernel JS (rotina JS em vez de codigo nativo —
+// maquinaria interna, ex: IoReportTargetDeviceChangeAsynchronous)
+const jsRoutineByItem = new Map();   // itemPointer -> funcao JS
+
 function readField(itemPointer, offset) {
     return os.readPhysical32(itemPointer + offset) >>> 0;
 }
@@ -36,6 +40,13 @@ function createWorkItem(devicePointer, itemPointer) {
 // IoQueueWorkItem(item, routine, queueType, context)
 function queueWorkItem(itemPointer, routinePointer, queueType, contextPointer) {
     queueWorkItemEx(itemPointer, routinePointer, queueType, contextPointer, false);
+}
+
+// variante interna: rotina JS (uso do proprio kernel, nao de drivers)
+function queueJsWorkItem(itemPointer, jsFunction, contextPointer) {
+    jsRoutineByItem.set(itemPointer >>> 0, jsFunction);
+    queueWorkItemEx(itemPointer, 0, 1 /* DelayedWorkQueue */, contextPointer,
+                    false);
 }
 
 // IoQueueWorkItemEx: routine e' IO_WORKITEM_ROUTINE_EX — (ioObject, context,
@@ -71,7 +82,12 @@ function runQueue() {
         const deviceObject = readField(itemPointer, WORKITEM.DEVICE_OBJECT);
         const context = readField(itemPointer, WORKITEM.CONTEXT);
         const itemType = readField(itemPointer, WORKITEM.TYPE);
-        if (itemType & 0x80000000)
+        const jsFunction = jsRoutineByItem.get(itemPointer >>> 0);
+        if (jsFunction) {
+            jsRoutineByItem.delete(itemPointer >>> 0);
+            jsFunction(deviceObject, context);
+        }
+        else if (itemType & 0x80000000)
             os.execMsAbi(routine, deviceObject, context, itemPointer);
         else if (itemType & 0x40000000)
             os.execMsAbi(routine, context);
@@ -102,5 +118,5 @@ function queueExWorkItem(itemPointer, queueType) {
 function pending() { return workQueue.length; }
 
 module.exports = { createWorkItem, queueWorkItem, queueWorkItemEx,
-                   initializeExWorkItem, queueExWorkItem, unqueue,
-                   runQueue, pending };
+                   queueJsWorkItem, initializeExWorkItem, queueExWorkItem,
+                   unqueue, runQueue, pending };

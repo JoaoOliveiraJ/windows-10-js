@@ -20,7 +20,7 @@ const nasm = process.env.NASM || 'C:/Program Files/NASM/nasm.exe';
 const buildDir = path.join(root, 'build');
 
 const STAGE2_MAX = 64 * 512;      /* reserva do stage2 na imagem (LBA 1..64) */
-const KERNEL_MAX = 2048 * 1024;   /* kernel max: 2MB (1MB-3MB; stack em 3MB) */
+const KERNEL_MAX = 3 * 1024 * 1024;   /* kernel max: 3MB (1MB-4MB; stack em 5MB) */
 
 function walk(dir, out = []) {
     if (!existsSync(dir)) return out;
@@ -228,6 +228,28 @@ if (existsSync(mouclassDriverSource)) {
     console.log('driver Microsoft mouclass.sys incluido (binario do sistema)');
 } else {
     console.log('AVISO: mouclass.sys nao encontrado no Windows desta maquina');
+}
+
+/* 0b5. pilha de ARMAZENAMENTO da Microsoft (binarios do sistema, nunca
+ * commitados): ataport (port driver ATA) + atapi (miniport IDE) -> disk +
+ * classpnp (classe de disco) -> mountmgr (Mount Manager). A cadeia de
+ * dependencias e' resolvida modulo-a-modulo pelo PE loader: atapi importa
+ * ataport, disk importa classpnp, ambos importam wmilib/hal. */
+const storageStackDrivers = ['ataport.sys', 'atapi.sys', 'disk.sys',
+                             'classpnp.sys', 'mountmgr.sys', 'wmilib.sys'];
+for (const storageDriverName of storageStackDrivers) {
+    const storageDriverSource = 'C:/Windows/System32/drivers/' + storageDriverName;
+    if (existsSync(storageDriverSource)) {
+        const storageDriverTarget = path.join(buildDir, storageDriverName);
+        writeFileSync(storageDriverTarget, readFileSync(storageDriverSource));
+        builtDrivers.push({ name: 'apps/' + storageDriverName,
+                            file: storageDriverTarget });
+        console.log('driver Microsoft ' + storageDriverName +
+                    ' incluido (binario do sistema)');
+    } else {
+        console.log('AVISO: ' + storageDriverName +
+                    ' nao encontrado no Windows desta maquina');
+    }
 }
 
 /* 0c. trampolim de AP (SMP): modo real -> 64 bits; o JS copia p/ 0x9000 no

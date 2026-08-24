@@ -45,6 +45,21 @@ function init() {
     // drivers de servico lidos do Registry + PnP start
     const loaded = Services.startBootDrivers();
     os.debugPrint('[boot] servicos carregados: ' + loaded);
+
+    // pilha de ARMAZENAMENTO (estilo NT no boot): o PnP monta a pilha do
+    // controlador IDE PCI — atapi/ataport (port) -> QUERY_DEVICE_RELATIONS
+    // enumera os discos -> disk.sys+classpnp anexam em cada PDO IDE\Disk
+    const Pnp = require('ntos/io/pnp');
+    for (const pciFunction of PciBus.devices) {
+        if (pciFunction.classCode === 0x01 && pciFunction.subClass === 0x01 &&
+            pciFunction.node) {
+            os.debugPrint('[boot] controlador IDE em ' + pciFunction.bus + ':' +
+                          pciFunction.device + '.' + pciFunction.func +
+                          ' — montando pilha de armazenamento');
+            Pnp.enumeratePdoStack(pciFunction.node);
+        }
+    }
+
     // rotinas IoRegisterDriverReinitialization rodam agora (como no NT)
     Lifecycle.runReinitializationRoutines();
 }

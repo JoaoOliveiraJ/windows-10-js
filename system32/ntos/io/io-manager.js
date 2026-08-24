@@ -37,6 +37,8 @@ const IRP_MJ = {
     WRITE:          0x04,
     DEVICE_CONTROL: 0x0E,
     INTERNAL_DEVICE_CONTROL: 0x0F,
+    SHUTDOWN:       0x10,
+    FILE_SYSTEM_CONTROL: 0x0D,
     CLEANUP:        0x12,
     POWER:          0x16,
     PNP:            0x1B,
@@ -314,10 +316,12 @@ function callNativeDriver(device, ioRequestPacket) {
 
     const data = ioRequestPacket.params.data;
     const dataLength = data ? String(data).length : 0;
-    // buffer de dados so existe p/ READ/WRITE/DEVICE_CONTROL (METHOD_BUFFERED)
+    // buffer de dados so existe p/ READ/WRITE/DEVICE_CONTROL/FS_CONTROL
+    // (METHOD_BUFFERED; o FSCTL usa a mesma uniao do DEVICE_CONTROL)
     const needsBuffer = ioRequestPacket.major === IRP_MJ.READ ||
                         ioRequestPacket.major === IRP_MJ.WRITE ||
-                        ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL;
+                        ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL ||
+                        ioRequestPacket.major === IRP_MJ.FILE_SYSTEM_CONTROL;
     const bufferLength = ioRequestPacket.major === IRP_MJ.WRITE ? dataLength :
                          (ioRequestPacket.params.bufferLength || 2048);
 
@@ -344,7 +348,8 @@ function callNativeDriver(device, ioRequestPacket) {
                       ioRequestPacket.params.idType,
         pnpSlotPointer: ioRequestPacket.params.pnpSlotPointer || 0,
         userEvent: ioRequestPacket.params.userEvent || 0,
-        ioctl: ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL
+        ioctl: (ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL ||
+                ioRequestPacket.major === IRP_MJ.FILE_SYSTEM_CONTROL)
             ? { code: ioRequestPacket.params.controlCode >>> 0,
                 inputLength: dataLength }
             : null,
@@ -369,7 +374,8 @@ function callNativeDriver(device, ioRequestPacket) {
     }
 
     if ((ioRequestPacket.major === IRP_MJ.READ ||
-         ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL) &&
+         ioRequestPacket.major === IRP_MJ.DEVICE_CONTROL ||
+         ioRequestPacket.major === IRP_MJ.FILE_SYSTEM_CONTROL) &&
         ioRequestPacket.info > 0) {
         let text = '';
         for (let i = 0; i < ioRequestPacket.info; i++)

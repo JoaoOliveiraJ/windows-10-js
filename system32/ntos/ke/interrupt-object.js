@@ -25,6 +25,42 @@ const NATIVE_IRQ1_FLAG = 0x81510;
 
 const chainHeadByVector = new Map();   // vector -> primeiro KINTERRUPT ptr
 
+// DIRQL por vetor (lido pelo stub asm via o C no despacho imediato: so
+// preempta quando currentIrql < dirql — o criterio do HAL do NT)
+const IRQ_DIRQL_TABLE = 0x81600;
+
+// desmascara a IRQ no PIC e descarta pendencias velhas (como o HAL faz ao
+// conectar um KINTERRUPT: o driver so ve interrupcoes novas, de atividade
+// real — nunca um latch do boot anterior a conexao)
+function picClearAndUnmask(vectorNumber) {
+    const irqNumber = vectorNumber - 0x20;
+    if (irqNumber < 0 || irqNumber > 15) return;
+    // IDE legacy (IRQ14/15): a linha INTRQ fica assertada enquanto houver um
+    // comando completado sem leitura do status, e o DRQ fica armado enquanto
+    // houver dados nao lidos de um comando anterior (residuo do boot). O HAL/
+    // driver drena esse estado residual ao conectar: status + drenar o data
+    // port se DRQ estiver armado — senao a tempestade de IRQs nunca cessa
+    if (irqNumber === 14) ideDrainStaleInterrupt(0x1F0, 0x1F7);
+    if (irqNumber === 15) ideDrainStaleInterrupt(0x170, 0x177);
+    // EOI generico nos dois PICs descarta qualquer pendencia latched
+    os.writePort8(0x20, 0x20);
+    if (irqNumber >= 8) os.writePort8(0xA0, 0x20);
+    if (irqNumber < 8)
+        os.writePort8(0x21, os.readPort8(0x21) & ~(1 << irqNumber));
+    else
+        os.writePort8(0xA1, os.readPort8(0xA1) & ~(1 << (irqNumber - 8)));
+}
+
+// drena um comando IDE residual: le o status (limpa INTRQ) e, se houver DRQ
+// armado de um comando anterior, consome os 256 words do data port
+function ideDrainStaleInterrupt(dataPort, statusPort) {
+    const status = os.readPort8(statusPort);
+    if (status & 0x08) {   // DRQ
+        for (let wordIndex = 0; wordIndex < 256; wordIndex++)
+            os.readPort16(dataPort);
+    }
+}
+
 function readGuest8(a)  { return os.readPhysical8(a); }
 function readGuest32(a) { return os.readPhysical32(a) >>> 0; }
 function readGuest64(a) {
@@ -96,6 +132,10 @@ function ioConnectInterrupt(outInterruptPointer, serviceRoutine, serviceContext,
     const previousHead = chainHeadByVector.get(vectorNumber) || 0;
     writeGuest64(kinterruptPointer + KI.LIST_ENTRY, previousHead);
     chainHeadByVector.set(vectorNumber, kinterruptPointer);
+    // publica o DIRQL do vetor p/ o despacho imediato do stub asm
+    os.writePhysical32(IRQ_DIRQL_TABLE + vectorNumber * 4, irql & 0xFF);
+    // desmascara a IRQ no PIC com pendencias antigas descartadas (como o HAL)
+    picClearAndUnmask(vectorNumber);
 
     // primeira ISR do vetor: liga o despacho JS -> cadeia nativa
     if (!previousHead) {
@@ -128,6 +168,8 @@ function ioDisconnectInterrupt(kinterruptPointer) {
             os.writePhysical8(kinterruptPointer + KI.CONNECTED, 0);
             GuestMemory.guestFreeBytes(kinterruptPointer);
             if (!next && !previousLink && !(chainHeadByVector.get(vector))) {
+                // cadeia vazia: despublica o DIRQL (sem despacho imediato)
+                os.writePhysical32(IRQ_DIRQL_TABLE + vector * 4, 0);
                 // cadeia vazia: o stub do teclado volta a ler a porta 0x60
                 if (vector === Interrupts.VECTOR_KEYBOARD)
                     os.writePhysical8(NATIVE_IRQ1_FLAG, 0);

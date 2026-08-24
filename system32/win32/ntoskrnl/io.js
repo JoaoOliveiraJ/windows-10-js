@@ -24,6 +24,8 @@ const InterruptObject = require('ntos/ke/interrupt-object');
 const Controller = require('ntos/io/controller');
 const StartIo = require('ntos/io/start-io');
 const HwDescription = require('ntos/cm/hw-description');
+const DeviceResources = require('ntos/io/device-resources');
+const IrpBuilder = require('win32/ntoskrnl/irp-builder');
 
 const DEVICE = NtAbi.DEVICE_OBJECT;
 
@@ -51,14 +53,79 @@ const plugPlayRegistrations = [];
 // devices com classes WMI registradas (IoWMIRegistrationControl)
 const wmiRegisteredDevices = new Set();
 
+// CONFIGURATION_INFORMATION global (IoGetConfigurationInformation): contagem
+// de devices por tipo — drivers (disk.sys) incrementam DiskCount de verdade
+let configurationInformationPointer = 0;
+
+// IoFileObjectType: a variavel global do kernel (POBJECT_TYPE) — o simbolo
+// aponta para uma struct de tipo persistente com o nome "File"
+let fileObjectTypeVariable = 0;
+
+// extensoes genericas de IRP (IoGet/SetGenericIrpExtension) + activity id
+// (GUID de rastreio ETW por IRP/thread) — estado real, em JS porque o IRP
+// e' compartilhado com o asm (efeito observavel identico)
+const irpExtensionByPointer = new Map();   // irpPtr -> { generic, activityIdPtr }
+let threadActivityIdPointer = 0;           // GUID (16 bytes) da thread atual
+
+// devices registrados p/ notificacao de shutdown (IRP_MJ_SHUTDOWN no halt)
+const shutdownNotificationDevices = [];
+
+// callbacks de prioridade de IO (IoRegisterPriorityCallback)
+const ioPriorityCallbacks = [];
+
+// hard error mode da thread atual (IoSetThreadHardErrorMode) — default do
+// NT para threads de kernel: hard errors HABILITADOS (1)
+let threadHardErrorModeEnabled = 1;
+
+function configurationInformation() {
+    if (!configurationInformationPointer)
+        configurationInformationPointer = GuestMemory.guestAllocBytes(0x40);
+    return configurationInformationPointer;
+}
+
+// struct de tipo de objeto persistente com um nome (IoFileObjectType/PsJobType)
+function makeObjectTypeVariable(typeName) {
+    const typeStruct = GuestMemory.guestAllocBytes(0x40);
+    const nameBuffer = GuestMemory.guestAllocBytes((typeName.length + 1) * 2);
+    GuestStrings.writeGuestWideString(nameBuffer, typeName);
+    GuestMemory.writeGuest64(typeStruct, nameBuffer);   // +0: Name.Buffer
+    const variable = GuestMemory.guestAllocBytes(8);    // a "global" POBJECT_TYPE
+    GuestMemory.writeGuest64(variable, typeStruct);
+    return variable;
+}
+
+function fileObjectType() {
+    if (!fileObjectTypeVariable)
+        fileObjectTypeVariable = makeObjectTypeVariable('File');
+    return fileObjectTypeVariable;
+}
+
+// extensao de um IRP (criada sob demanda; activity id zerado)
+function irpExtension(irpPointer) {
+    const key = irpPointer >>> 0;
+    let extension = irpExtensionByPointer.get(key);
+    if (!extension) {
+        extension = { generic: 0, propagate: 0,
+                      activityIdPointer: GuestMemory.guestAllocBytes(16) };
+        irpExtensionByPointer.set(key, extension);
+    }
+    return extension;
+}
+
+
 // acha o no \Device\<name> dono de um device pointer (para resolver o nome
 // do PDO em IoGetDeviceProperty/PhysicalDeviceObjectName)
 function findDeviceNodeByPointer(devicePointer) {
+    // varre a arvore \Device recursivamente (devices podem viver em
+    // subdiretorios — ex: \Device\Ide\IdePort0 do ataport)
     const deviceRoot = ObjectManager.lookup('\\Device');
-    if (!deviceRoot || !deviceRoot.children) return null;
-    for (const child of deviceRoot.children.values()) {
-        if (child.data && child.data.nativeDevicePointer === (devicePointer >>> 0))
-            return child;
+    const stack = deviceRoot && deviceRoot.children
+        ? [...deviceRoot.children.values()] : [];
+    while (stack.length) {
+        const node = stack.pop();
+        if (node.data && node.data.nativeDevicePointer === (devicePointer >>> 0))
+            return node;
+        if (node.children) stack.push(...node.children.values());
     }
     return null;
 }
@@ -97,12 +164,24 @@ function createDevice(driverObjectPointer, extensionSize, deviceName, deviceType
 
     // registra no namespace ligado ao driver DONO do objeto (o NT liga o
     // device ao DRIVER_OBJECT do argumento — suporta carga aninhada de
-    // drivers, ex: ZwLoadDriver dentro de um DriverEntry)
+    // drivers, ex: ZwLoadDriver dentro de um DriverEntry). Nomes com
+    // subdiretorio ("\Device\Ide\IdePort0" do ataport) criam os diretorios
+    // intermediarios — o lookup por path precisa descer pela arvore
     const driverNode = Lifecycle.nodeByDriverObjectPointer(driverObjectPointer) ||
                        Lifecycle.getCurrentDriverNode();
     if (driverNode) {
-        const deviceNode = ObjectManager.createObject('\\Device', shortName, 'Device',
-                                                      { driver: driverNode });
+        const nameParts = shortName.split('\\');
+        let deviceNode;
+        if (nameParts.length === 1) {
+            deviceNode = ObjectManager.createObject('\\Device', shortName,
+                                                    'Device', { driver: driverNode });
+        } else {
+            const directoryPath = '\\Device\\' + nameParts.slice(0, -1).join('\\');
+            ObjectManager.createDirectory(directoryPath);
+            deviceNode = ObjectManager.createObject(directoryPath,
+                nameParts[nameParts.length - 1], 'Device', { driver: driverNode });
+            deviceNode.name = shortName;   // path completo ("\Device\"+name resolve)
+        }
         deviceNode.data.nativeDevicePointer = devicePage;
         driverNode.data.devices.push(deviceNode);
     }
@@ -271,6 +350,45 @@ module.exports = {
         'IoGetAttachedDeviceReference',    // topo da cadeia + referencia
         'IoInvalidateDeviceState',         // PnP: re-avaliar o estado do device
         'IoQueryDeviceDescription',        // legado: \Hardware\Description
+        'IoConnectInterruptEx',            // (paramsPtr) — FULLY_SPECIFIED/LINE_BASED
+        'IoDisconnectInterruptEx',         // (paramsPtr)
+        'IoReadPartitionTableEx',          // (dev, outDriveLayoutPtr)
+        'IoGetConfigurationInformation',   // -> CONFIGURATION_INFORMATION*
+        'IoInvalidateDeviceRelations',     // (pdo, relationType)
+        'IoGetGenericIrpExtension',        // (irp) -> extensao
+        'IoSetGenericIrpExtension',        // (irp, ext, propagate)
+        'IoPropagateIrpExtensionEx',       // (irp, dest, propagate)
+        'IoGetActivityIdIrp',              // (irp, outGuid)
+        'IoSetActivityIdIrp',              // (irp, guidPtr)
+        'IoGetActivityIdThread',           // (outGuid)
+        'IoClearActivityIdThread',         // ()
+        'IoPropagateActivityIdToThread',   // (irp)
+        'IoIsActivityTracingEnabled',      // -> BOOLEAN (sem sessao ETW)
+        'IoReuseIrp',                      // (irp, status)
+        'IoInitializeIrp',                 // (irp, packetSize, stackSize)
+        'IoSetMasterIrpStatus',            // (masterIrp, status) -> status
+        'IoBuildPartialMdl',               // (srcMdl, dstMdl, va, length)
+        'IoSizeofWorkItem',                // -> tamanho do IO_WORKITEM
+        'IoAllocateSfioStreamIdentifier',  // Storage QoS: sem stream (NULL)
+        'IoGetSfioStreamIdentifier',       // -> NULL
+        'IoFreeSfioStreamIdentifier',      // (ptr)
+        'IoGetIoAttributionHandle',        // -> 0
+        'IoRecordIoAttribution',           // -> STATUS_SUCCESS (sem contabilizacao)
+        'IoGetIoPriorityHint',             // (irp) -> IOPRIORITY_NORMAL
+        'IoGetPagingIoPriority',           // (irp) -> 0
+        'IoGetRequestorProcess',           // (irp) -> EPROCESS
+        'IoIs32bitProcess',                // (irp) -> 0 (so x64)
+        'IoGetDeviceAttachmentBaseRef',    // (dev) -> base da pilha referenciado
+        'IoGetDevicePropertyData',         // (pdo, locale, key, type, size, buf, req)
+        'IoSetHardErrorOrVerifyDevice',    // (irp, dev)
+        'IoSetThreadHardErrorMode',        // (enabled) -> anterior
+        'IoRegisterShutdownNotification',  // (dev)
+        'IoUnregisterShutdownNotification',// (dev)
+        'IoReportTargetDeviceChangeAsynchronous', // (dev, guid, ctx, cb)
+        'IoRegisterPriorityCallback',      // (cb)
+        'IoUnregisterPriorityCallback',    // (cb)
+        'IoWMIDeviceObjectToProviderId',   // (dev) -> id do provider
+        'IoWMIWriteEvent',                 // (wnodeEventItem)
     ],
     handlers: [
         // IoCreateDevice(drvObj, extSize, nameUniPtr, type, chars, exclusive, outPtr)
@@ -786,5 +904,380 @@ module.exports = {
                 busTypePointer, busNumberPointer, controllerTypePointer,
                 controllerNumberPointer, peripheralTypePointer,
                 peripheralNumberPointer, calloutRoutine, contextPointer),
+        // IoConnectInterruptEx(paramsPtr): IO_CONNECT_INTERRUPT_PARAMETERS
+        // { u32 Version; union } — layouts REAIS do wdm.h:
+        //   Version 1 (CONNECT_FULLY_SPECIFIED, o que o ataport usa):
+        //     +0x08 PDO, +0x10 InterruptObject(OUT), +0x18 ServiceRoutine,
+        //     +0x20 ServiceContext, +0x28 SpinLock, +0x30 SynchronizeIrql(u8),
+        //     +0x31 FloatingSave, +0x32 ShareVector, +0x34 Vector(u32),
+        //     +0x38 Irql(u8), +0x3C InterruptMode(u32), +0x40 ProcessorMask,
+        //     +0x48 Group(u16)
+        //   Version 2 (CONNECT_LINE_BASED): mesmos campos ate SpinLock; a
+        //     IRQ vem do CM_RESOURCE_LIST do PDO (device-resources.js)
+        (paramsPointer) => {
+            const version = GuestMemory.readGuest32(paramsPointer);
+            if (version === 2) {   // CONNECT_LINE_BASED
+                const physicalDeviceObject =
+                    GuestMemory.readGuest64(paramsPointer + 0x08);
+                const serviceRoutine = GuestMemory.readGuest64(paramsPointer + 0x18);
+                const serviceContext = GuestMemory.readGuest64(paramsPointer + 0x20);
+                const spinLockPointer = GuestMemory.readGuest64(paramsPointer + 0x28);
+                const interruptResource =
+                    DeviceResources.consumeNextInterrupt(physicalDeviceObject);
+                if (!interruptResource) {
+                    os.debugPrint('[io] IoConnectInterruptEx LINE_BASED: PDO 0x' +
+                        physicalDeviceObject.toString(16) + ' sem IRQ restante');
+                    return 0xC000009A | 0;   // STATUS_INSUFFICIENT_RESOURCES
+                }
+                // o modo vem do recurso (bit LEVEL_SENSITIVE), como o HAL faz
+                const interruptMode = (interruptResource.flags & 0x02) ? 1 : 0;
+                const status = InterruptObject.ioConnectInterrupt(
+                    paramsPointer + 0x10, serviceRoutine, serviceContext,
+                    spinLockPointer, interruptResource.vector,
+                    interruptResource.level, interruptResource.level,
+                    interruptMode, 0, 0xFFFFFFFF, 0);
+                os.debugPrint('[io] interrupt LINE_BASED: vetor 0x' +
+                    interruptResource.vector.toString(16) + ' -> ISR 0x' +
+                    serviceRoutine.toString(16));
+                return status;
+            }
+            if (version === 1 || version === 4) {   // FULLY_SPECIFIED (+grupo)
+                const serviceRoutine = GuestMemory.readGuest64(paramsPointer + 0x18);
+                const serviceContext = GuestMemory.readGuest64(paramsPointer + 0x20);
+                const spinLockPointer = GuestMemory.readGuest64(paramsPointer + 0x28);
+                const synchronizeIrql = GuestMemory.readGuest8(paramsPointer + 0x30);
+                const shareVector = GuestMemory.readGuest8(paramsPointer + 0x32);
+                const vector = GuestMemory.readGuest32(paramsPointer + 0x34);
+                const irql = GuestMemory.readGuest8(paramsPointer + 0x38);
+                const interruptMode = GuestMemory.readGuest32(paramsPointer + 0x3C);
+                os.debugPrint('[io] interrupt FULLY_SPECIFIED: vetor 0x' +
+                    (vector >>> 0).toString(16) + ' irql ' + irql +
+                    ' -> ISR 0x' + serviceRoutine.toString(16));
+                return InterruptObject.ioConnectInterrupt(
+                    paramsPointer + 0x10, serviceRoutine, serviceContext,
+                    spinLockPointer, vector, irql, synchronizeIrql,
+                    interruptMode, shareVector, 0xFFFFFFFF, 0);
+            }
+            os.debugPrint('[io] IoConnectInterruptEx: version ' + version +
+                          ' (MESSAGE_BASED) sem suporte — MSI nao configurado');
+            return 0xC00000BB | 0;   // STATUS_NOT_SUPPORTED (MSI)
+        },
+        // IoDisconnectInterruptEx(paramsPtr): +0 Version, +0x08 KINTERRUPT
+        (paramsPointer) => {
+            const kinterruptPointer = GuestMemory.readGuest64(paramsPointer + 0x08);
+            if (!kinterruptPointer) return 0xC000000D | 0;   // STATUS_INVALID_PARAMETER
+            InterruptObject.ioDisconnectInterrupt(kinterruptPointer >>> 0);
+            return 0;
+        },
+        // IoReadPartitionTableEx(dev, outDriveLayoutPtrPtr): a implementacao
+        // real envia IOCTL_DISK_GET_DRIVE_LAYOUT_EX ao device (disk.sys
+        // responde quando a pilha esta de pe) e devolve o buffer de pool
+        (deviceObjectPointer, outDriveLayoutPointer) => {
+            const IOCTL_DISK_GET_DRIVE_LAYOUT_EX = 0x00070050;
+            const bufferPointer = GuestMemory.guestAllocBytes(0x1000);
+            const eventPointer = GuestMemory.guestAllocBytes(0x18);
+            Dispatcher.initializeEvent(eventPointer, 0, 0);
+            const ioRequest = IoManager.makeIoRequest(
+                IoManager.IRP_MJ.DEVICE_CONTROL, {
+                    ioctl: { code: IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+                             inputLength: 0 },
+                    buffer: bufferPointer, bufferLength: 0x1000,
+                    userEvent: eventPointer,
+                });
+            const deviceNode = findDeviceNodeByPointer(deviceObjectPointer);
+            if (!deviceNode) return 0xC000000D | 0;
+            IoManager.callDriver('\\Device\\' + deviceNode.name, ioRequest);
+            if (ioRequest.status !== 0) return ioRequest.status | 0;
+            GuestMemory.writeGuest64(outDriveLayoutPointer, bufferPointer);
+            return 0;
+        },
+        // IoGetConfigurationInformation() -> CONFIGURATION_INFORMATION*
+        () => configurationInformation(),
+        // IoInvalidateDeviceRelations(pdo, relationType): marca e re-enumera
+        // as relacoes do barramento (BusRelations) via o orquestrador PnP —
+        // e' assim que novos discos do ataport aparecem sem reboot
+        (pdoPointer, relationType) => {
+            const deviceNode = findDeviceNodeByPointer(pdoPointer);
+            os.debugPrint('[pnp] relacoes invalidadas (' + relationType +
+                          ') p/ \\Device\\' + (deviceNode ? deviceNode.name : '?'));
+            if (!deviceNode) return 0;
+            const Pnp = require('ntos/io/pnp');
+            const parentFdoNode = deviceNode.data && deviceNode.data.childOf
+                ? deviceNode.data.childOf
+                : deviceNode;
+            const childPointers = Pnp.queryBusRelations(parentFdoNode);
+            for (const childPointer of childPointers) {
+                const childNode = Pnp.registerChildPdo(parentFdoNode,
+                                                       childPointer);
+                const childIds = childNode.data.hardwareIds || [];
+                if (childIds.length) Pnp.enumeratePdoStack(childNode);
+            }
+            return 0;
+        },
+        // IoGetGenericIrpExtension(irp) -> ponteiro da extensao generica
+        (irpPointer) => irpExtension(irpPointer).generic,
+        // IoSetGenericIrpExtension(irp, extensionPtr, propagate)
+        (irpPointer, extensionPointer, propagate) => {
+            const extension = irpExtension(irpPointer);
+            extension.generic = extensionPointer >>> 0;
+            extension.propagate = propagate ? 1 : 0;
+            return 0;
+        },
+        // IoPropagateIrpExtensionEx(irp, irpBeingExtended, propagate): copia a
+        // extensao marcada como propagavel para o IRP encadeado/associado
+        (irpPointer, targetIrpPointer, _propagate) => {
+            const source = irpExtension(irpPointer);
+            if (!source.generic) return 0xC0000225 | 0;   // STATUS_NOT_FOUND
+            const target = irpExtension(targetIrpPointer);
+            target.generic = source.generic;
+            target.propagate = source.propagate;
+            return 0;
+        },
+        // IoGetActivityIdIrp(irp, outGuid): copia o GUID de rastreio do IRP
+        (irpPointer, outGuidPointer) => {
+            const extension = irpExtension(irpPointer);
+            for (let byteIndex = 0; byteIndex < 16; byteIndex++)
+                GuestMemory.writeGuest8(outGuidPointer + byteIndex,
+                    GuestMemory.readGuest8(extension.activityIdPointer + byteIndex));
+            return 0;
+        },
+        // IoSetActivityIdIrp(irp, guidPtr)
+        (irpPointer, guidPointer) => {
+            const extension = irpExtension(irpPointer);
+            for (let byteIndex = 0; byteIndex < 16; byteIndex++)
+                GuestMemory.writeGuest8(extension.activityIdPointer + byteIndex,
+                    GuestMemory.readGuest8(guidPointer + byteIndex));
+            return 0;
+        },
+        // IoGetActivityIdThread(outGuid): GUID de rastreio da thread atual
+        (outGuidPointer) => {
+            if (!threadActivityIdPointer)
+                threadActivityIdPointer = GuestMemory.guestAllocBytes(16);
+            for (let byteIndex = 0; byteIndex < 16; byteIndex++)
+                GuestMemory.writeGuest8(outGuidPointer + byteIndex,
+                    GuestMemory.readGuest8(threadActivityIdPointer + byteIndex));
+            return 0;
+        },
+        // IoClearActivityIdThread(): zera o GUID da thread
+        () => {
+            if (threadActivityIdPointer) {
+                GuestMemory.writeGuest64(threadActivityIdPointer, 0);
+                GuestMemory.writeGuest64(threadActivityIdPointer + 8, 0);
+            }
+            return 0;
+        },
+        // IoPropagateActivityIdToThread(irp): thread herda o GUID do IRP
+        (irpPointer) => {
+            if (!threadActivityIdPointer)
+                threadActivityIdPointer = GuestMemory.guestAllocBytes(16);
+            const extension = irpExtension(irpPointer);
+            for (let byteIndex = 0; byteIndex < 16; byteIndex++)
+                GuestMemory.writeGuest8(threadActivityIdPointer + byteIndex,
+                    GuestMemory.readGuest8(extension.activityIdPointer + byteIndex));
+            return 0;
+        },
+        // IoIsActivityTracingEnabled() -> 0: nenhuma sessao de trace ETW
+        // ativa no sistema (resposta real — nao ha consumidor)
+        () => 0,
+        // IoReuseIrp(irp, status): reinicializa o IRP para reuso mantendo o
+        // tamanho/stack alocados (semantica real de IopReuseIrp)
+        (irpPointer, status) => {
+            const IRP = NtAbi.IRP, SL = NtAbi.IO_STACK_LOCATION;
+            const stackCount = GuestMemory.readGuest8(irpPointer + IRP.STACK_COUNT);
+            GuestMemory.writeGuest32(irpPointer + IRP.FLAGS, 0);
+            GuestMemory.writeGuest64(irpPointer + IRP.MDL_ADDRESS, 0);
+            GuestMemory.writeGuest64(irpPointer + IRP.SYSTEM_BUFFER, 0);
+            GuestMemory.writeGuest32(irpPointer + IRP.IO_STATUS, status | 0);
+            GuestMemory.writeGuest64(irpPointer + IRP.IO_STATUS_INFORMATION, 0);
+            GuestMemory.writeGuest8(irpPointer + IRP.CURRENT_LOCATION, stackCount + 1);
+            GuestMemory.writeGuest8(irpPointer + IRP.CANCEL, 0);
+            GuestMemory.writeGuest64(irpPointer + IRP.USER_EVENT, 0);
+            GuestMemory.writeGuest64(irpPointer + IRP.CURRENT_STACK_LOCATION,
+                IrpBuilder.firstStackLocation(irpPointer, stackCount) + SL.SIZE);
+            return 0;
+        },
+        // IoInitializeIrp(irp, packetSize, stackSize): init completo in-place
+        // (a mesma forma que IopAllocateIrp deixa o IRP, sem a alocacao)
+        (irpPointer, packetSize, stackSize) => {
+            const IRP = NtAbi.IRP, SL = NtAbi.IO_STACK_LOCATION;
+            for (let offset = 0; offset < packetSize; offset += 4)
+                GuestMemory.writeGuest32(irpPointer + offset, 0);
+            GuestMemory.writeGuest16(irpPointer + IRP.TYPE, IRP.IO_TYPE);
+            GuestMemory.writeGuest16(irpPointer + IRP.SIZE_FIELD, packetSize);
+            GuestMemory.writeGuest8(irpPointer + IRP.STACK_COUNT, stackSize);
+            GuestMemory.writeGuest8(irpPointer + IRP.CURRENT_LOCATION, stackSize + 1);
+            GuestMemory.writeGuest64(irpPointer + IRP.CURRENT_STACK_LOCATION,
+                IrpBuilder.firstStackLocation(irpPointer, stackSize) + SL.SIZE);
+            return 0;
+        },
+        // IoSetMasterIrpStatus(masterIrp, status) -> status: grava no IoStatus
+        (masterIrpPointer, status) => {
+            GuestMemory.writeGuest32(masterIrpPointer + NtAbi.IRP.IO_STATUS,
+                                     status | 0);
+            return status;
+        },
+        // IoBuildPartialMdl(sourceMdl, targetMdl, va, length): a janela do
+        // target dentro do source (StartVa/ByteOffset/ByteCount + PFNs com o
+        // deslocamento), marcado MDL_PARTIAL (0x10) — semantica real
+        (sourceMdlPointer, targetMdlPointer, virtualAddress, length) => {
+            const MDL = NtAbi.MDL;
+            const sourceStartVa = GuestMemory.readGuest64(sourceMdlPointer + MDL.START_VA);
+            const alignedVa = virtualAddress & ~0xFFF;
+            GuestMemory.writeGuest64(targetMdlPointer + MDL.START_VA, alignedVa);
+            GuestMemory.writeGuest32(targetMdlPointer + MDL.BYTE_OFFSET,
+                                     virtualAddress & 0xFFF);
+            GuestMemory.writeGuest32(targetMdlPointer + MDL.BYTE_COUNT,
+                                     length >>> 0);
+            GuestMemory.writeGuest16(targetMdlPointer + MDL.MDL_FLAGS,
+                GuestMemory.readGuest16(targetMdlPointer + MDL.MDL_FLAGS) | 0x10);
+            const pfnOffset = Math.floor((alignedVa - sourceStartVa) / 0x1000);
+            const pageCount = Math.ceil(((virtualAddress & 0xFFF) + length) / 0x1000);
+            for (let pageIndex = 0; pageIndex < pageCount; pageIndex++)
+                GuestMemory.writeGuest64(
+                    targetMdlPointer + MDL.PFN_ARRAY + pageIndex * 8,
+                    GuestMemory.readGuest64(sourceMdlPointer + MDL.PFN_ARRAY +
+                                            (pfnOffset + pageIndex) * 8));
+            return 0;
+        },
+        // IoSizeofWorkItem() -> tamanho do IO_WORKITEM (nt-abi)
+        () => NtAbi.IO_WORKITEM.SIZE,
+        // ---- Storage QoS (SFIO): nenhuma policy de throughput configurada —
+        // os retornos sao os documentados pelo MSDN para essa situacao
+        // IoAllocateSfioStreamIdentifier(fileObject, outStreamIdPtr) -> NULL
+        (_fileObjectPointer, outStreamIdPointer) => {
+            if (outStreamIdPointer)
+                GuestMemory.writeGuest64(outStreamIdPointer, 0);
+            return 0;
+        },
+        // IoGetSfioStreamIdentifier(fileObject/irp) -> NULL
+        (_fileObjectPointer) => 0,
+        // IoFreeSfioStreamIdentifier(streamId): nada a liberar (nunca alocado)
+        (_streamIdPointer) => 0,
+        // IoGetIoAttributionHandle(...) -> 0 (sem atribuicao configurada)
+        () => 0,
+        // IoRecordIoAttribution(...): sem contabilizacao ativa — a chamada e'
+        // benignamente aceita (STATUS_SUCCESS, como sem provider)
+        () => 0,
+        // IoGetIoPriorityHint(irp) -> IOPRIORITY_NORMAL (0)
+        (_irpPointer) => 0,
+        // IoGetPagingIoPriority(irp) -> 0 (normal)
+        (_irpPointer) => 0,
+        // IoGetRequestorProcess(irp): o processo que pediu o IRP. Nossos
+        // IRPs nascem de codigo de kernel (servicos do sistema) — o dono e'
+        // o System EPROCESS (estado real do jsOS)
+        (_irpPointer) => Process.getSystemProcess(),
+        // IoIs32bitProcess(irp) -> 0: todo o nosso codigo e' x86-64 (nunca
+        // ha processo WOW64 no jsOS — resposta real)
+        (_irpPointer) => 0,
+        // IoGetDeviceAttachmentBaseRef(dev) -> o device da BASE da pilha,
+        // referenciado (anda AttachedDevice ate o fundo; o NT devolve com
+        // ref incrementada — o caller da ObfDereferenceObject)
+        (devicePointer) => {
+            let basePointer = devicePointer >>> 0;
+            for (;;) {
+                // o campo AttachedDevice aponta para CIMA; a base e' achada
+                // descendo — guardamos a cadeia invertida via pdoOfAttached
+                const above = GuestMemory.readGuest32(basePointer +
+                    DEVICE.ATTACHED_DEVICE);
+                if (!above) break;
+                basePointer = above;
+            }
+            // a base real e' o PDO de hardware registrado no attach
+            const pdoPointer = pdoOfAttachedDevice.get(basePointer >>> 0) ||
+                               basePointer;
+            GuestMemory.writeGuest32(pdoPointer + DEVICE.REFERENCE_COUNT,
+                GuestMemory.readGuest32(pdoPointer + DEVICE.REFERENCE_COUNT) + 1);
+            return pdoPointer;
+        },
+        // IoGetDevicePropertyData(pdo, localeId, keyPtr, type, size, buffer,
+        // requiredSizePtr): DEVPROP — propriedade que nao conhecemos: o NT
+        // responde STATUS_NOT_FOUND (a chave nao esta no devnode) — logamos
+        // o fmtid para implementarmos se um driver real precisar
+        (pdoPointer, _localeId, keyPointer, _type, _size, _bufferPointer,
+         _requiredSizePointer) => {
+            os.debugPrint('[io] DevicePropertyData: pdo 0x' +
+                          (pdoPointer >>> 0).toString(16) + ' key fmtid ' +
+                          GuestMemory.readGuest32(keyPointer).toString(16) +
+                          '-' + GuestMemory.readGuest16(keyPointer + 4).toString(16) +
+                          '-' + GuestMemory.readGuest16(keyPointer + 6).toString(16) +
+                          ' pid ' + GuestMemory.readGuest32(keyPointer + 16));
+            return 0xC0000225 | 0;   // STATUS_NOT_FOUND
+        },
+        // IoSetHardErrorOrVerifyDevice(irp, dev): associa o device ao IRP
+        // para o caminho de hard error/verify (campo real do thread)
+        (irpPointer, deviceObjectPointer) => {
+            const extension = irpExtension(irpPointer);
+            extension.hardErrorDevice = deviceObjectPointer >>> 0;
+            return 0;
+        },
+        // IoSetThreadHardErrorMode(enabled) -> modo anterior (default do NT
+        // para threads de kernel: habilitado)
+        (enabled) => {
+            const previous = threadHardErrorModeEnabled;
+            threadHardErrorModeEnabled = enabled ? 1 : 0;
+            return previous;
+        },
+        // IoRegisterShutdownNotification(dev): lista real — IRP_MJ_SHUTDOWN
+        // vai para cada um quando o sistema desligar
+        (deviceObjectPointer) => {
+            shutdownNotificationDevices.push(deviceObjectPointer >>> 0);
+            return 0;
+        },
+        // IoUnregisterShutdownNotification(dev)
+        (deviceObjectPointer) => {
+            const index = shutdownNotificationDevices.indexOf(
+                deviceObjectPointer >>> 0);
+            if (index >= 0) shutdownNotificationDevices.splice(index, 1);
+            return 0;
+        },
+        // IoReportTargetDeviceChangeAsynchronous(dev, guid, context, cb):
+        // agenda work item que dispara as notificacoes PnP registradas
+        // (TARGET_DEVICE_CHANGE) — async de verdade, como o NT
+        (deviceObjectPointer, guidPointer, contextPointer, callbackPointer) => {
+            const workItemPointer = GuestMemory.guestAllocBytes(
+                NtAbi.IO_WORKITEM.SIZE);
+            WorkItems.queueJsWorkItem(workItemPointer, () => {
+                for (const registration of plugPlayRegistrations) {
+                    os.execMsAbi(registration.callbackPointer, guidPointer,
+                                 registration.contextPointer);
+                }
+                if (callbackPointer)
+                    os.execMsAbi(callbackPointer, contextPointer, 0);
+            }, contextPointer);
+            return 0;
+        },
+        // IoRegisterPriorityCallback(cb): chamado quando a prioridade de IO
+        // de um IRP muda (nenhuma mudanca hoje — registrar e' o real)
+        (callbackPointer) => {
+            ioPriorityCallbacks.push(callbackPointer >>> 0);
+            return 0;
+        },
+        // IoUnregisterPriorityCallback(cb)
+        (callbackPointer) => {
+            const index = ioPriorityCallbacks.indexOf(callbackPointer >>> 0);
+            if (index >= 0) ioPriorityCallbacks.splice(index, 1);
+            return 0;
+        },
+        // IoWMIDeviceObjectToProviderId(dev) -> id estavel do provider WMI
+        // (o NT deriva do devnode; um ponteiro unico e estavel cumpre)
+        (deviceObjectPointer) => deviceObjectPointer >>> 0,
+        // IoWMIWriteEvent(wnodeEventItem): sem consumidor WMI registrado, o
+        // evento e' descartado e o NT retorna STATUS_SUCCESS — o descarte
+        // documentado aqui e' exatamente esse caminho
+        (_wnodeEventItemPointer) => 0,
     ],
+    // exports de DADO: IoFileObjectType e' a variavel global POBJECT_TYPE
+    dataExports: {
+        IoFileObjectType: () => fileObjectType(),
+    },
+    // chamado pelo halt: IRP_MJ_SHUTDOWN para cada device registrado
+    runShutdownNotifications() {
+        for (const devicePointer of shutdownNotificationDevices) {
+            const deviceNode = findDeviceNodeByPointer(devicePointer);
+            if (!deviceNode) continue;
+            const ioRequest = IoManager.makeIoRequest(IoManager.IRP_MJ.SHUTDOWN,
+                                                      {});
+            IoManager.callDriver('\\Device\\' + deviceNode.name, ioRequest);
+        }
+    },
 };

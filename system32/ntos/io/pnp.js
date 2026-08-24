@@ -23,7 +23,33 @@ const NtAbi = require('win32/nt-abi');
 const FUNCTION_DRIVER_BY_ID = {
     PNP0303: 'i8042prt',   // controlador de teclado PS/2 -> port driver MS
     PNP0F13: 'i8042prt',   // mouse PS/2 -> mesmo port driver
+    // controlador IDE do i440fx (PIIX3): o mshdc.inf do NT casa atapi por
+    // classe (PCI\CC_0101); aqui casamos pelo id exato do hardware da VM
+    'PCI\\VEN_8086&DEV_7010': 'atapi',
 };
+
+// casamento por PREFIXO de hardwareId (o que os INFs fazem com ids como
+// "IDE\Disk*"): o ataport reporta os PDOs de disco como "IDE\Disk<vendor>...";
+// o disk.inf do NT casa com eles — aqui o prefixo faz o mesmo papel
+const FUNCTION_DRIVER_BY_PREFIX = [
+    { prefix: 'IDE\\Disk', service: 'disk' },
+    { prefix: 'IDE\\CdRom', service: 'cdrom' },
+];
+
+// devolve o servico do driver funcional para um conjunto de hardwareIds
+// (exato primeiro — hardwareId especifico; prefixo depois — como o PnP do NT
+// tenta HardwareIDs antes de CompatibleIDs)
+function findFunctionDriver(hardwareIds) {
+    const exact = hardwareIds.map(id => FUNCTION_DRIVER_BY_ID[id]).find(d => d);
+    if (exact) return exact;
+    for (const id of hardwareIds) {
+        const rule = FUNCTION_DRIVER_BY_PREFIX.find(
+            candidate => id.startsWith(candidate.prefix));
+        if (rule) return rule.service;
+    }
+    return null;
+}
+
 
 // hardwareId -> GUID da classe de dispositivo (o que o INF do dispositivo
 // declara em ClassGuid; o NT usa para achar os UpperFilters da classe)
@@ -192,17 +218,38 @@ function registerChildPdo(parentFdoNode, childDevicePointer) {
 }
 
 // sobe a pilha inteira de um PDO de barramento: driver funcional, start e
-// enumeracao de filhos (o ciclo PnP completo do NT)
+// enumeracao de filhos (o ciclo PnP completo do NT) — RECURSIVO: os PDOs
+// filhos reportados pelo bus driver (ataport reporta os discos) tambem
+// montam suas pilhas (disk.sys anexa no PDO IDE\Disk...), como o NT faz
 function enumeratePdoStack(pdoNode) {
-    const ids = pdoNode.data.hardwareIds ||
+    if (pdoNode.data.stackEnumerated) return pdoNode.data.functionStackNode || null;
+    pdoNode.data.stackEnumerated = true;
+    let ids = pdoNode.data.hardwareIds ||
         (pdoNode.data.descriptor ? pdoNode.data.descriptor.hardwareIds : []);
-    const driverName = ids.map(id => FUNCTION_DRIVER_BY_ID[id]).find(d => d);
+    // PDO de barramento sem ids preenchidos (PCI): pergunta ao bus driver
+    // pelo QUERY_ID — o caminho real do PnP para descobrir o hardwareId
+    if (!ids.length) {
+        const reportedId = IoManager.queryDeviceId('\\Device\\' + pdoNode.name, 0);
+        if (reportedId) {
+            ids = [reportedId];
+            pdoNode.data.hardwareIds = ids;
+        }
+    }
+    const driverName = findFunctionDriver(ids);
     if (!driverName) {
         os.debugPrint('[pnp] sem driver p/ ' + (ids[0] || pdoNode.name));
         return null;
     }
+    // o servico pode nao ter sido carregado no boot (Start=3): carrega agora,
+    // como o SCM faria ao instalar o devnode
+    if (!ObjectManager.lookup('\\Driver\\' + driverName) &&
+        !Services.loadServiceDriver(driverName)) {
+        os.debugPrint('[pnp] servico ' + driverName + ' indisponivel');
+        return null;
+    }
     const fdoNode = attachFunctionDriver(pdoNode, driverName);
     if (!fdoNode) return null;
+    pdoNode.data.functionStackNode = fdoNode;
     // pilha completa do devnode: filtros de classe ANTES do START (o NT monta
     // a pilha inteira e so entao manda START_DEVICE ao topo)
     attachUpperFilters(pdoNode, fdoNode, ids);
@@ -215,8 +262,17 @@ function enumeratePdoStack(pdoNode) {
     const childPointers = queryBusRelations(fdoNode);
     os.debugPrint('[pnp] \\Device\\' + fdoNode.name + ': ' +
                   childPointers.length + ' filho(s) no bus');
-    for (const childPointer of childPointers)
-        registerChildPdo(fdoNode, childPointer);
+    for (const childPointer of childPointers) {
+        const childNode = registerChildPdo(fdoNode, childPointer);
+        // recursao: o filho pode ter driver funcional proprio (IDE\Disk ->
+        // disk.sys) — monta a pilha dele como o PnP manager faria
+        const childIds = childNode.data.hardwareIds || [];
+        if (findFunctionDriver(childIds)) {
+            os.debugPrint('[pnp] filho \\Device\\' + childNode.name +
+                          ' (' + (childIds[0] || '?') + '): montando pilha');
+            enumeratePdoStack(childNode);
+        }
+    }
     return fdoNode;
 }
 
