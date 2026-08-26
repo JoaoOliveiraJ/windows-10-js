@@ -33,10 +33,15 @@ const HOOKED_FUNCTIONS = [
     'AtaPortQuerySystemTime',
     'AtaPortNotification',
     'AtaPortRequestCallback',
+    'AtaPortGetPhysicalAddress',
+    'AtaPortGetUnCachedExtension',
+    'AtaPortGetScatterGatherList',
+    'AtaPortBuildRequestSenseIrb',
+    'AtaPortCompleteRequest',
 ];
 
-const STUB_SIZE = 64;
-const RING_ENTRIES = 256;
+const STUB_SIZE = 96;
+const RING_ENTRIES = 128;
 
 let stubPage = 0;
 let recordPage = 0;   // [0]=ringHead (indice), [8..]=ring de portas (u64)
@@ -55,22 +60,24 @@ function dword(v) {   // little-endian 32-bit (enderecos < 4GB)
     return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
 }
 
-// monta o stub: grava (porta | (funcIndex+1)<<48) no ring e salta p/ a real
+// monta o stub: grava rcx em ring1 (porta) e rdx em ring2 (valor/2o arg),
+// e salta p/ a funcao real
 function buildStub(stubAddress, realAddress, functionIndex) {
     const ringHead = recordPage;
-    const ringBase = recordPage + 8;
+    const ring1Base = recordPage + 8;                  // portas (rcx)
+    const ring2Base = recordPage + 8 + RING_ENTRIES * 8; // valores (rdx)
     const tag = (functionIndex + 1) * 0x1000000000000;   // (idx+1) << 48
     const code = [
         0x50,                                             // push rax
         0x53,                                             // push rbx
-        0x48, 0x89, 0xC8,                                 // mov rax, rcx
-        0x48, 0xBB, ...qword(tag),                        // mov rbx, tag
-        0x48, 0x09, 0xD8,                                 // or rax, rbx
-        0x48, 0x8B, 0x1C, 0x25, ...dword(ringHead),       // mov rbx, [ringHead]
-        0x48, 0x89, 0x04, 0xDD, ...dword(ringBase),       // mov [rbx*8+ringBase], rax
-        0x48, 0xFF, 0xC3,                                 // inc rbx
-        0x48, 0x83, 0xE3, 0xFF,                           // and rbx, 0xff
-        0x48, 0x89, 0x1C, 0x25, ...dword(ringHead),       // mov [ringHead], rbx
+        0x48, 0x8B, 0x04, 0x25, ...dword(ringHead),       // mov rax, [ringHead]
+        0x48, 0xBB, ...qword(ring1Base),                  // mov rbx, ring1Base
+        0x48, 0x89, 0x0C, 0xC3,                           // mov [rbx+rax*8], rcx
+        0x48, 0xBB, ...qword(ring2Base),                  // mov rbx, ring2Base
+        0x48, 0x89, 0x14, 0xC3,                           // mov [rbx+rax*8], rdx
+        0x48, 0xFF, 0xC0,                                 // inc rax
+        0x48, 0x25, 0xFF, 0x00, 0x00, 0x00,               // and rax, 0xff
+        0x48, 0x89, 0x04, 0x25, ...dword(ringHead),       // mov [ringHead], rax
         0x5B,                                             // pop rbx
         0x58,                                             // pop rax
         0x48, 0xB8, ...qword(realAddress),                // mov rax, realFunc
@@ -97,21 +104,21 @@ function hookAddressFor(dllName, functionName, realAddress) {
     return stubAddress;
 }
 
-// despeja a sequencia de chamadas (funcao + arg rcx) que o atapi fez no scan
+// despeja a sequencia de chamadas (arg rcx + arg rdx) que o atapi fez no scan
 function dumpResults() {
     if (!recordPage) { os.debugPrint('[ataport-trace] sem hooks'); return; }
     const head = GuestMemory.readGuest64(recordPage);
+    const ring1 = recordPage + 8;
+    const ring2 = ring1 + RING_ENTRIES * 8;
     os.debugPrint('[ataport-trace] total de chamadas hook: ' + head);
     const count = Math.min(head, RING_ENTRIES);
     const parts = [];
     for (let i = 0; i < count; i++) {
-        const value = GuestMemory.readGuest64(recordPage + 8 + i * 8);
-        const functionIndex = Math.floor(value / 0x1000000000000) - 1;
-        const argument = value % 0x1000000000000;
-        const name = HOOKED_FUNCTIONS[functionIndex] || ('#' + functionIndex);
-        parts.push(name.replace('AtaPort', '') + '(0x' + argument.toString(16) + ')');
+        const rcx = GuestMemory.readGuest64(ring1 + i * 8);
+        const rdx = GuestMemory.readGuest64(ring2 + i * 8);
+        parts.push('rcx=0x' + rcx.toString(16) + ',rdx=0x' + rdx.toString(16));
     }
-    os.debugPrint('[ataport-trace] fluxo: ' + parts.join(' '));
+    os.debugPrint('[ataport-trace] fluxo: ' + parts.join(' | '));
 }
 
 module.exports = { hookAddressFor, dumpResults };

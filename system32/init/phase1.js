@@ -73,6 +73,15 @@ function init() {
             Ntoskrnl.runKernelTasks();
         }
         require('win32/ataport-trace').dumpResults();
+        // estado real do canal IDE primario apos a deteccao do atapi:
+        // 0x1F7 status (0x50=pronto DRDY|DSC, 0x80=BSY/reset), 0x1F2/3/4/5 =
+        // assinatura do drive (ATA: 01 01 00 00), 0x3F6 = controle (SRST?)
+        os.debugPrint('[idedbg] 0x1F7 status=0x' +
+            os.readPort8(0x1F7).toString(16) + ' 0x3F6 ctrl=0x' +
+            os.readPort8(0x3F6).toString(16) + ' sig 0x1F2-5=0x' +
+            os.readPort8(0x1F2).toString(16) + ' ' + os.readPort8(0x1F3).toString(16) +
+            ' ' + os.readPort8(0x1F4).toString(16) + ' ' + os.readPort8(0x1F5).toString(16) +
+            ' drv/head 0x1F6=0x' + os.readPort8(0x1F6).toString(16));
     }
 
     // rotinas IoRegisterDriverReinitialization rodam agora (como no NT)
