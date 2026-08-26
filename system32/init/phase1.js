@@ -59,6 +59,21 @@ function init() {
             os.debugPrint('[boot] controlador IDE em ' + pciFunction.bus + ':' +
                           pciFunction.device + '.' + pciFunction.func +
                           ' — montando pilha de armazenamento');
+            // O nosso stage2 le o kernel via PIO, deixando os registradores de
+            // assinatura (0x1F2-0x1F5) "sujos" com o ultimo LBA. O atapi le a
+            // assinatura para detectar o device e, suja, conclui "sem device".
+            // Como no boot real, RESETAMOS o canal (SRST) p/ o drive apresentar
+            // a assinatura ATA limpa (01 01 00 00) antes do scan do atapi.
+            os.writePort8(0x3F6, 0x04);        // SRST: entra em reset
+            for (let rstHold = 0; rstHold < 50000; rstHold++);   // >=5us
+            os.writePort8(0x3F6, 0x00);        // sai do reset
+            for (let busyWait = 0; busyWait < 500000; busyWait++) {
+                if (!(os.readPort8(0x1F7) & 0x80)) break;   // espera BSY limpar
+            }
+            os.debugPrint('[boot] reset IDE primario: status=0x' +
+                os.readPort8(0x1F7).toString(16) + ' sig 0x1F2-5=0x' +
+                os.readPort8(0x1F2).toString(16) + ' ' + os.readPort8(0x1F3).toString(16) +
+                ' ' + os.readPort8(0x1F4).toString(16) + ' ' + os.readPort8(0x1F5).toString(16));
             Pnp.enumeratePdoStack(pciFunction.node);
         }
     }
