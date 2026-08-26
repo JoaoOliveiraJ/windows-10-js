@@ -53,12 +53,7 @@ PeLoader.registerResolver(/\.sys$/i, (dllName, functionName) => {
     const exportAddress = dependencyNode.data.exports[functionName];
     if (!exportAddress)
         throw new Error('export ausente: ' + dllName + '!' + functionName);
-    // DIAGNOSTICO (temporario): intercepta as funcoes de porta do ataport p/
-    // ver que porta o atapi usa no scan (nativo->nativo e' invisivel senao)
-    const AtaportTrace = require('win32/ataport-trace');
-    const hookAddress = AtaportTrace.hookAddressFor(dllName, functionName,
-                                                    exportAddress);
-    return { address: hookAddress || exportAddress };
+    return { address: exportAddress };
 });
 
 function banner() {

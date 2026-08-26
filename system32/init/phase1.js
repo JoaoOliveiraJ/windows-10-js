@@ -25,11 +25,11 @@ function init() {
     // mais registrado como \Device\Keyboard; so o decode ASCII dele e' reusado
     // pelo servico de teclado que le do \Device\KeyboardClass0
 
-    // NTFS: o disco IDE e' do atapi.sys da Microsoft (driver real). O nosso
-    // ata-pio.js NAO toca mais no controlador — dois drivers no mesmo IDE
-    // deixam o canal em estado que o atapi nao reconhece. A montagem NTFS
-    // volta quando a pilha atapi->disk estiver de pe.
-    if (false && AtaPio.present(1)) {
+    // NTFS: o disco IDE e' do NOSSO ata-pio.js (100% JS, le de verdade). O
+    // atapi.sys da MS esta' ESTACIONADO por agora (WIP: a deteccao do
+    // ataport.sys ainda nao emite o IDENTIFY p/ detectar o disco — ver o
+    // diagnostico em win32/ataport-trace.js).
+    if (AtaPio.present(1)) {
         try {
             const ntfs = Ntfs.mount(1);
             ObjectManager.mount('\\NTFS', ntfs);
@@ -49,55 +49,21 @@ function init() {
     const loaded = Services.startBootDrivers();
     os.debugPrint('[boot] servicos carregados: ' + loaded);
 
-    // pilha de ARMAZENAMENTO (estilo NT no boot): o PnP monta a pilha do
-    // controlador IDE PCI — atapi/ataport (port) -> QUERY_DEVICE_RELATIONS
-    // enumera os discos -> disk.sys+classpnp anexam em cada PDO IDE\Disk
-    const Pnp = require('ntos/io/pnp');
-    for (const pciFunction of PciBus.devices) {
-        if (pciFunction.classCode === 0x01 && pciFunction.subClass === 0x01 &&
-            pciFunction.node) {
-            os.debugPrint('[boot] controlador IDE em ' + pciFunction.bus + ':' +
-                          pciFunction.device + '.' + pciFunction.func +
-                          ' — montando pilha de armazenamento');
-            // O nosso stage2 le o kernel via PIO, deixando os registradores de
-            // assinatura (0x1F2-0x1F5) "sujos" com o ultimo LBA. O atapi le a
-            // assinatura para detectar o device e, suja, conclui "sem device".
-            // Como no boot real, RESETAMOS o canal (SRST) p/ o drive apresentar
-            // a assinatura ATA limpa (01 01 00 00) antes do scan do atapi.
-            os.writePort8(0x3F6, 0x04);        // SRST: entra em reset
-            for (let rstHold = 0; rstHold < 50000; rstHold++);   // >=5us
-            os.writePort8(0x3F6, 0x00);        // sai do reset
-            for (let busyWait = 0; busyWait < 500000; busyWait++) {
-                if (!(os.readPort8(0x1F7) & 0x80)) break;   // espera BSY limpar
-            }
-            os.debugPrint('[boot] reset IDE primario: status=0x' +
-                os.readPort8(0x1F7).toString(16) + ' sig 0x1F2-5=0x' +
-                os.readPort8(0x1F2).toString(16) + ' ' + os.readPort8(0x1F3).toString(16) +
-                ' ' + os.readPort8(0x1F4).toString(16) + ' ' + os.readPort8(0x1F5).toString(16));
-            Pnp.enumeratePdoStack(pciFunction.node);
-        }
-    }
-
-    // DIAGNOSTICO (temporario): drena o work item de deteccao do atapi e
-    // despeja as portas IDE que ele usou no scan (ataport-trace)
-    {
-        const Interrupts = require('nano/interrupts');
-        const Ntoskrnl = require('win32/ntoskrnl');
-        for (let drainIndex = 0; drainIndex < 600; drainIndex++) {
-            Interrupts.dispatchPending();
-            Ntoskrnl.runKernelTasks();
-        }
-        require('win32/ataport-trace').dumpResults();
-        // estado real do canal IDE primario apos a deteccao do atapi:
-        // 0x1F7 status (0x50=pronto DRDY|DSC, 0x80=BSY/reset), 0x1F2/3/4/5 =
-        // assinatura do drive (ATA: 01 01 00 00), 0x3F6 = controle (SRST?)
-        os.debugPrint('[idedbg] 0x1F7 status=0x' +
-            os.readPort8(0x1F7).toString(16) + ' 0x3F6 ctrl=0x' +
-            os.readPort8(0x3F6).toString(16) + ' sig 0x1F2-5=0x' +
-            os.readPort8(0x1F2).toString(16) + ' ' + os.readPort8(0x1F3).toString(16) +
-            ' ' + os.readPort8(0x1F4).toString(16) + ' ' + os.readPort8(0x1F5).toString(16) +
-            ' drv/head 0x1F6=0x' + os.readPort8(0x1F6).toString(16));
-    }
+    // pilha de ARMAZENAMENTO (atapi.sys -> disk.sys -> classpnp.sys ->
+    // mountmgr.sys, binarios MS reais) — ESTACIONADA por agora (WIP).
+    //
+    // O que JA funciona (verificado em runtime): os .sys da MS carregam e rodam
+    // com o nosso ntoskrnl (160+ APIs implementadas em JS), o PE loader resolve
+    // imports modulo-a-modulo (atapi->ataport, disk->classpnp), o PnP faz
+    // AddDevice/START_DEVICE e conecta a IRQ (IoConnectInterruptEx).
+    // O que falta: a deteccao de devices do ataport.sys nao emite o comando
+    // IDENTIFY (maquina de estados assincrona, codigo fechado) — o canal IDE se
+    // configura certo mas o disco nao e' detectado ainda.
+    //
+    // O ata-pio.js e' o dono do disco IDE. Para NAO conflitar (dois drivers no
+    // mesmo IDE), o atapi NAO anexa no controlador IDE nesta fase. Os drivers
+    // de storage carregam como servicos (DriverEntry roda) mas nao anexam.
+    // P/ retomar a pilha MS: Pnp.enumeratePdoStack(node do controlador IDE).
 
     // rotinas IoRegisterDriverReinitialization rodam agora (como no NT)
     Lifecycle.runReinitializationRoutines();

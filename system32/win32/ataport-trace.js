@@ -86,6 +86,84 @@ function buildStub(stubAddress, realAddress, functionIndex) {
     writeBytes(stubAddress, code);
 }
 
+// ---- detour em funcoes do atapi (HwFindAdapter 0x1630 / HwStartIo 0x1710) ----
+// Conta quantas vezes cada uma e' chamada — prova se o ataport emite comandos
+// (HwStartIo) ou so' faz o setup (HwFindAdapter). 0x1630 e' o CONTROLE (sei que
+// roda no setup) p/ validar que o detour funciona.
+const ATAPI_FUNCS = [   // [rva, nome]
+    [0x1630, 'cb0'],
+    [0x16a0, 'cb1'],
+    [0x1710, 'cb2'],
+    [0x17a0, 'cb3'],
+    [0x1940, 'cb4'],
+    [0x1a50, 'cb5'],
+];
+let funcCounterBase = 0;
+const funcCounterByName = {};
+
+function instrumentAtapiFunction(atapiBase, rva, name, slotIndex) {
+    const target = atapiBase + rva;
+    const stub = GuestMemory.guestAllocPage();
+    const counterAddr = funcCounterBase + slotIndex * 8;
+    GuestMemory.writeGuest64(counterAddr, 0);
+    // le a 1a instrucao (tamanho variavel) p/ realocar; so' suporto o prologo
+    // mov [rsp+N],reg (48 89 5C/6C/74/7C 24 XX) que e' seguro realocar
+    const b0 = os.readPhysical8(target);
+    const b1 = os.readPhysical8(target + 1);
+    const b2 = os.readPhysical8(target + 2);
+    let prologueLen = 0;
+    let prologue = [];
+    if (b0 === 0x48 && b1 === 0x89 && (b2 & 0xC7) === 0x44) {
+        prologueLen = 5;
+        prologue = [b0, b1, b2, os.readPhysical8(target + 3),
+                    os.readPhysical8(target + 4)];
+    } else if (b0 === 0x8B && (b1 & 0xC7) === 0x81) {
+        prologueLen = 6;   // mov eax/..., [rcx+disp32]  (8B xx)
+        for (let i = 0; i < 6; i++) prologue.push(os.readPhysical8(target + i));
+    } else if (b0 === 0x53 || (b0 === 0x40 && b1 === 0x53)) {
+        // push rbx (53 ou 40 53) seguido de sub rsp,imm8 (48 83 EC XX):
+        // realoca os 6 bytes (seguro — sem referencias relativas)
+        if (os.readPhysical8(target + 2) === 0x48 &&
+            os.readPhysical8(target + 3) === 0x83 &&
+            os.readPhysical8(target + 4) === 0xEC) {
+            prologueLen = 6;
+            for (let i = 0; i < 6; i++)
+                prologue.push(os.readPhysical8(target + i));
+        } else {
+            os.debugPrint('[ataport-trace] ' + name + ': prologo push nao suportado, pulo');
+            return;
+        }
+    } else {
+        os.debugPrint('[ataport-trace] ' + name + ': prologo desconhecido (' +
+                      b0.toString(16) + '), pulo');
+        return;
+    }
+    // stub: inc [counter]; <prologo realocado>; jmp target+prologueLen
+    const stubLen = 8 + prologueLen + 5;
+    const jmpBackRel = (target + prologueLen) - (stub + stubLen);
+    writeBytes(stub, [
+        0x48, 0xFF, 0x04, 0x25, ...dword(counterAddr),   // inc qword [counter]
+        ...prologue,
+        0xE9, ...dword(jmpBackRel),
+    ]);
+    // o salto E9 (5 bytes) tem rel32 relativo ao FIM dele (target+5); os NOPs
+    // so' preenchem ate prologueLen (o stub salta de volta p/ target+prologueLen)
+    const detourRel = stub - (target + 5);
+    const detourBytes = [0xE9, ...dword(detourRel)];
+    while (detourBytes.length < prologueLen) detourBytes.push(0x90);
+    writeBytes(target, detourBytes);
+    funcCounterByName[name] = counterAddr;
+    os.debugPrint('[ataport-trace] ' + name + ' instrumentado @ 0x' +
+                  target.toString(16));
+}
+
+function instrumentAtapiCommandProcessor(atapiBase) {
+    if (!recordPage) recordPage = GuestMemory.guestAllocPage();
+    funcCounterBase = recordPage + 0x800;
+    ATAPI_FUNCS.forEach(([rva, name], i) =>
+        instrumentAtapiFunction(atapiBase, rva, name, i));
+}
+
 // chamado pelo resolver modulo-a-modulo (main.js): se a funcao e' de porta do
 // ataport, devolve o stub (que registra a porta); senao, 0 (endereco real)
 function hookAddressFor(dllName, functionName, realAddress) {
@@ -106,6 +184,10 @@ function hookAddressFor(dllName, functionName, realAddress) {
 
 // despeja a sequencia de chamadas (arg rcx + arg rdx) que o atapi fez no scan
 function dumpResults() {
+    // contadores por funcao do atapi (HwFindAdapter/HwStartIo/...)
+    for (const name of Object.keys(funcCounterByName))
+        os.debugPrint('[ataport-trace] atapi!' + name + ' chamado ' +
+                      GuestMemory.readGuest64(funcCounterByName[name]) + 'x');
     if (!recordPage) { os.debugPrint('[ataport-trace] sem hooks'); return; }
     const head = GuestMemory.readGuest64(recordPage);
     const ring1 = recordPage + 8;
@@ -121,4 +203,5 @@ function dumpResults() {
     os.debugPrint('[ataport-trace] fluxo: ' + parts.join(' | '));
 }
 
-module.exports = { hookAddressFor, dumpResults };
+module.exports = { hookAddressFor, dumpResults,
+                   instrumentAtapiCommandProcessor };

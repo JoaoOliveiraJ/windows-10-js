@@ -119,15 +119,11 @@ function run() {
     assert(irpBad.status === IoManager.STATUS.NOT_FOUND, 'iom IRP dispositivo inexistente');
 
     // NTFS: monta o disco slave IDE, lista a raiz e le HELLO.TXT de verdade.
-    // PULADO enquanto o disco e' do atapi.sys (o ata-pio nao toca mais o IDE;
-    // montar via atapi->disk volta quando a pilha estiver de pe)
-    if (false) {
     const ntfs = Ntfs.mount(1);
     assert(ntfs.exists('/HELLO.TXT'), 'ntfs existe');
     assert(ntfs.list().indexOf('/HELLO.TXT') >= 0, 'ntfs list');
     assert(ntfs.read('/HELLO.TXT').indexOf('jsOS') >= 0, 'ntfs read');
     assert(ObjectManager.open('\\DosDevices\\D:\\HELLO.TXT') > 0, 'ntfs via D:');
-    }
 
     // nanokernel: LAPIC timer — o timer DEVE estar disparando (IDT em JS,
     // entrega real pela plataforma). Janela generosa: a calibracao varia
@@ -320,9 +316,6 @@ function run() {
 
     // grupo 16: IRP_MJ_CREATE/CLOSE com FILE_OBJECT + Zw* file I/O real
     // (driver le o NTFS D: e escreve/le no ramfs C: em modo kernel)
-    // PULADO enquanto o disco e' do atapi.sys (D:/NTFS via ata-pio desligado;
-    // volta quando atapi->disk->classpnp->mountmgr montar o D: pela pilha MS)
-    if (false) {
     Ntoskrnl.loadDriver('/fileio.sys');
     assert(ObjectManager.lookup('\\Device\\FileIo'), 'fileio device criado');
     const opened = IoManager.openDevice('\\Device\\FileIo');
@@ -334,7 +327,6 @@ function run() {
            fileIoRead.result + '"');
     assert(IoManager.closeDevice(opened.handle) === IoManager.STATUS.SUCCESS,
            'IRP_MJ_CLOSE no driver nativo');
-    }
 
     // grupo 17: ExAllocatePool2 + Ob* refcount + IRP_MJ_CLEANUP
     Ntoskrnl.loadDriver('/guards.sys');
@@ -388,10 +380,8 @@ function run() {
            'AddDevice do pcidemo criou o FDO via PnP');
     checkNativeDriver('\\Device\\PciDemo', 'pcidemo-ok');
 
-    // grupo 23 (atadrv) e 24 (compat): PULADOS na transicao — o atadrv faz
-    // acesso IDE direto (conflita com o atapi.sys, dono do canal primario) e o
-    // compat usa o NTFS D: (desligado). Voltam quando a pilha MS montar o D:.
-    if (false) {
+    // grupo 23: driver de storage NATIVO lendo o disco IDE de verdade via
+    // HAL (READ_PORT_*/WRITE_PORT_*) — ATA PIO igual ao nosso driver JS
     Ntoskrnl.loadDriver('/atadrv.sys');
     assert(ObjectManager.lookup('\\Device\\AtaDrv'), 'atadrv device criado');
     checkNativeDriver('\\Device\\AtaDrv', 'atadrv-ok');
@@ -401,7 +391,6 @@ function run() {
     Ntoskrnl.loadDriver('/compat.sys');
     assert(ObjectManager.lookup('\\Device\\Compat'), 'compat device criado');
     checkNativeDriver('\\Device\\Compat', 'compat-ok');
-    }
 
     // grupo 25: lookaside lists, MDL com PFNs reais, resolucao dinamica de
     // export chamado por ponteiro de funcao, ExGetPreviousMode
@@ -411,13 +400,9 @@ function run() {
 
     // grupo 26: cancelamento de IRP real + ZwOpenFile/QueryInformationFile/
     // SetInformationFile(delete)
-    // PULADO enquanto o disco e' do atapi.sys (os checks de Zw*File usam o
-    // NTFS D:, desligado; volta quando a pilha MS montar o D:)
-    if (false) {
     Ntoskrnl.loadDriver('/cancel.sys');
     assert(ObjectManager.lookup('\\Device\\Cancel'), 'cancel device criado');
     checkNativeDriver('\\Device\\Cancel', 'cancel-ok');
-    }
 
     // grupo 27: listas interlocked com spinlock, ERESOURCE variants, driver
     // object extension

@@ -34,6 +34,11 @@ function readConfig16(bus, device, func, offset) {
     return (value >>> ((offset & 2) * 8)) & 0xFFFF;
 }
 
+function writeConfig32(bus, device, func, offset, value) {
+    os.writePort32(CONFIG_ADDRESS, configAddress(bus, device, func, offset));
+    os.writePort32(CONFIG_DATA, value >>> 0);
+}
+
 // ---- CM_RESOURCE_LIST real (layout wdm.h) em memoria do convidado ---------
 // CM_RESOURCE_LIST { u32 Count; CM_FULL_RESOURCE_DESCRIPTOR List[1] }
 // FULL { u32 InterfaceType; u32 BusNumber; CM_PARTIAL_RESOURCE_LIST
@@ -182,6 +187,15 @@ function enumerate() {
                     resourceListPointer: 0,
                     pdoName: 'PDO' + pdoIndex++,
                 });
+                // como o pci.sys no START_DEVICE: habilita o dispositivo no PCI
+                // command register — IO space (bit0) + Memory space (bit1) +
+                // Bus Master (bit2). Sem o bus-master o atapi nao consegue usar
+                // o BMIDE p/ o DMA do IDENTIFY.
+                if (bars.length > 0) {
+                    const commandStatus = readConfig32(bus, device, func, 0x04);
+                    writeConfig32(bus, device, func, 0x04,
+                                  (commandStatus | 0x07) >>> 0);
+                }
             }
         }
     }
