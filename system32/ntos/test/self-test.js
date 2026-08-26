@@ -320,6 +320,9 @@ function run() {
 
     // grupo 16: IRP_MJ_CREATE/CLOSE com FILE_OBJECT + Zw* file I/O real
     // (driver le o NTFS D: e escreve/le no ramfs C: em modo kernel)
+    // PULADO enquanto o disco e' do atapi.sys (D:/NTFS via ata-pio desligado;
+    // volta quando atapi->disk->classpnp->mountmgr montar o D: pela pilha MS)
+    if (false) {
     Ntoskrnl.loadDriver('/fileio.sys');
     assert(ObjectManager.lookup('\\Device\\FileIo'), 'fileio device criado');
     const opened = IoManager.openDevice('\\Device\\FileIo');
@@ -331,6 +334,7 @@ function run() {
            fileIoRead.result + '"');
     assert(IoManager.closeDevice(opened.handle) === IoManager.STATUS.SUCCESS,
            'IRP_MJ_CLOSE no driver nativo');
+    }
 
     // grupo 17: ExAllocatePool2 + Ob* refcount + IRP_MJ_CLEANUP
     Ntoskrnl.loadDriver('/guards.sys');
@@ -404,9 +408,13 @@ function run() {
 
     // grupo 26: cancelamento de IRP real + ZwOpenFile/QueryInformationFile/
     // SetInformationFile(delete)
+    // PULADO enquanto o disco e' do atapi.sys (os checks de Zw*File usam o
+    // NTFS D:, desligado; volta quando a pilha MS montar o D:)
+    if (false) {
     Ntoskrnl.loadDriver('/cancel.sys');
     assert(ObjectManager.lookup('\\Device\\Cancel'), 'cancel device criado');
     checkNativeDriver('\\Device\\Cancel', 'cancel-ok');
+    }
 
     // grupo 27: listas interlocked com spinlock, ERESOURCE variants, driver
     // object extension

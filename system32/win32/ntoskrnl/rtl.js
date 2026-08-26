@@ -94,52 +94,100 @@ function spinLockRelease(spinLockPointer, oldIrql) {
     Irql.lowerIrql(oldIrql);
 }
 
+// flags da RTL_QUERY_REGISTRY_TABLE (wdm.h)
+const QR_SUBKEY = 0x01, QR_TOPKEY = 0x02, QR_REQUIRED = 0x04,
+      QR_NOVALUE = 0x08, QR_NOEXPAND = 0x10, QR_DIRECT = 0x20,
+      QR_DELETE = 0x40, QR_NOSTRING = 0x80;
+
 // RtlQueryRegistryValues[Ex](relativeTo, pathWStr, queryTablePtr, contextPtr,
 // environmentPtr): anda a RTL_QUERY_REGISTRY_TABLE — cada entrada tem Name
-// (PCWSTR). No NT a versao sem Ex chama esta (mesma assinatura).
+// (PCWSTR). Semantica REAL do NT:
+//  - a chave pode NAO existir: mesmo assim cada entrada e' processada — o
+//    driver recebe o DEFAULT (ou o QueryRoutine roda com o default). Sem isso
+//    o driver fica com a configuracao em branco (foi o bug do atapi).
+//  - DIRECT (0x20): o valor/default e' escrito DIRETO em EntryContext.
+//  - com QueryRoutine (sem DIRECT): o NT CHAMA a rotina do driver com
+//    (valueName, valueType, valueData, valueLength, context, entryContext).
+//  - REQUIRED + valor ausente (sem default): STATUS_OBJECT_NAME_NOT_FOUND.
 function queryRegistryValues(relativeTo, pathPointer, queryTablePointer,
-                             _contextPointer, _environmentPointer) {
+                             contextPointer, _environmentPointer) {
     const keyPath = GuestStrings.readGuestWideString(pathPointer);
     os.debugPrint('[rtl] QueryRegistry path="' + keyPath +
                   '" table=0x' + (queryTablePointer >>> 0).toString(16));
+    // a chave pode estar ausente — NAO retorna cedo; os defaults ainda valem
     const keyHandle = Registry.open(keyPath);
-    if (!keyHandle) return 0xC0000034 | 0;
     let cursor = queryTablePointer;
+    let status = 0;
     for (let entryIndex = 0; ; entryIndex++) {
         if (entryIndex > 64) break;   // tabela sem terminador (defesa)
         const queryRoutine = GuestMemory.readGuest64(cursor);
-        const flags = GuestMemory.readGuest32(cursor + 8);
+        const flags = GuestMemory.readGuest32(cursor + 8) >>> 0;
         const namePointer = GuestMemory.readGuest64(cursor + 0x10);
         const entryContext = GuestMemory.readGuest64(cursor + 0x18);
-        const defaultType = GuestMemory.readGuest32(cursor + 0x20);
+        const defaultType = GuestMemory.readGuest32(cursor + 0x20) >>> 0;
         const defaultData = GuestMemory.readGuest64(cursor + 0x28);
-        const defaultLength = GuestMemory.readGuest32(cursor + 0x30);
+        const defaultLength = GuestMemory.readGuest32(cursor + 0x30) >>> 0;
         if (!queryRoutine && !namePointer) break;   // fim da tabela
+        cursor += 0x38;   // sizeof(RTL_QUERY_REGISTRY_TABLE) x64
         // Name e' PCWSTR (string wide crua), NAO UNICODE_STRING*
         const valueName = namePointer
             ? GuestStrings.readGuestWideString(namePointer) : '';
-        const entry = valueName
+        // valor do registry (so' se a chave abriu e o valor existe)
+        const entry = (keyHandle && valueName)
             ? Registry.getValue(keyHandle, valueName) : null;
-        if (entry && entryContext) {
-            // RTL_QUERY_REGISTRY_DIRECT: escreve o valor direto
-            if (entry.type === 4 && entry.data.length >= 4) {
-                GuestMemory.writeGuest32(entryContext,
-                    entry.data[0] | (entry.data[1] << 8) |
-                    (entry.data[2] << 16) | (entry.data[3] << 24));
+
+        // resolve (tipo, bytes): valor real OU o default da entrada
+        let valueType = 0;
+        let valueBytes = null;
+        if (entry) {
+            valueType = entry.type >>> 0;
+            valueBytes = entry.data;
+        } else if (defaultType !== 0) {
+            valueType = defaultType;
+            if (defaultType === 4 && defaultLength === 4 && defaultData < 0x10000) {
+                // quirk REG_DWORD: o default cabe inline no ponteiro
+                valueBytes = [defaultData & 0xFF, (defaultData >>> 8) & 0xFF,
+                              (defaultData >>> 16) & 0xFF, (defaultData >>> 24) & 0xFF];
             } else {
-                for (let i = 0; i < entry.data.length; i++)
-                    GuestMemory.writeGuest8(entryContext + i,
-                                            entry.data[i]);
+                valueBytes = [];
+                for (let i = 0; i < defaultLength; i++)
+                    valueBytes.push(GuestMemory.readGuest8(defaultData + i));
             }
-        } else if (!entry && defaultData && entryContext &&
-                   defaultType === 4) {
-            GuestMemory.writeGuest32(entryContext,
-                GuestMemory.readGuest32(defaultData));
         }
-        cursor += 0x38;   // sizeof(RTL_QUERY_REGISTRY_TABLE) x64
+        os.debugPrint('[rtl]   [' + entryIndex + '] "' + valueName +
+                      '" flags=0x' + flags.toString(16) + ' routine=0x' +
+                      queryRoutine.toString(16) + ' -> ' +
+                      (entry ? 'valor' : (valueBytes ? 'default' : 'ausente')));
+        if (!valueBytes) {
+            if (flags & QR_REQUIRED) { status = 0xC0000034 | 0; break; }
+            continue;   // sem valor nem default: a entrada e' pulada
+        }
+        if (flags & QR_DIRECT) {
+            // escreve o valor/default DIRETO no EntryContext (buffer do driver)
+            for (let i = 0; i < valueBytes.length; i++)
+                GuestMemory.writeGuest8(entryContext + i, valueBytes[i]);
+            continue;
+        }
+        if (queryRoutine) {
+            // chama a QueryRoutine do driver: (valueName, valueType, valueData,
+            // valueLength, context, entryContext) — 6 args da ABI MS
+            const dataPointer =
+                GuestMemory.guestAllocBytes(Math.max(1, valueBytes.length));
+            for (let i = 0; i < valueBytes.length; i++)
+                GuestMemory.writeGuest8(dataPointer + i, valueBytes[i]);
+            const argArray = GuestMemory.guestAllocBytes(6 * 8);
+            const args = [namePointer, valueType, dataPointer,
+                          valueBytes.length, contextPointer, entryContext];
+            for (let i = 0; i < 6; i++)
+                GuestMemory.writeGuest64(argArray + i * 8, args[i]);
+            const routineStatus = os.execMsAbiN(queryRoutine, argArray, 6) | 0;
+            GuestMemory.guestFreeBytes(argArray);
+            GuestMemory.guestFreeBytes(dataPointer);
+            if (routineStatus < 0) { status = routineStatus; break; }
+        }
     }
-    Registry.closeHandle(keyHandle);
-    return 0;
+    if (keyHandle) Registry.closeHandle(keyHandle);
+    return status;
 }
 
 module.exports = {
