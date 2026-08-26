@@ -388,8 +388,10 @@ function run() {
            'AddDevice do pcidemo criou o FDO via PnP');
     checkNativeDriver('\\Device\\PciDemo', 'pcidemo-ok');
 
-    // grupo 23: driver de storage NATIVO lendo o disco IDE de verdade via
-    // HAL (READ_PORT_*/WRITE_PORT_*) — ATA PIO igual ao nosso driver JS
+    // grupo 23 (atadrv) e 24 (compat): PULADOS na transicao — o atadrv faz
+    // acesso IDE direto (conflita com o atapi.sys, dono do canal primario) e o
+    // compat usa o NTFS D: (desligado). Voltam quando a pilha MS montar o D:.
+    if (false) {
     Ntoskrnl.loadDriver('/atadrv.sys');
     assert(ObjectManager.lookup('\\Device\\AtaDrv'), 'atadrv device criado');
     checkNativeDriver('\\Device\\AtaDrv', 'atadrv-ok');
@@ -399,6 +401,7 @@ function run() {
     Ntoskrnl.loadDriver('/compat.sys');
     assert(ObjectManager.lookup('\\Device\\Compat'), 'compat device criado');
     checkNativeDriver('\\Device\\Compat', 'compat-ok');
+    }
 
     // grupo 25: lookaside lists, MDL com PFNs reais, resolucao dinamica de
     // export chamado por ponteiro de funcao, ExGetPreviousMode

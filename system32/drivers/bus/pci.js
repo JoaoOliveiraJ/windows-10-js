@@ -194,29 +194,37 @@ function resourcesOf(entry) {
     const resources = [];
     // controlador IDE em modo COMPATIBILITY (legado): os BARs 0-3 leem zero e
     // os canais usam portas/IRQs fixas — o pci.sys do NT SINTETIZA esses
-    // recursos no CM_RESOURCE_LIST do PDO. NOTA ataport: o parser de inter-
-    // rupcao do canal (0x27a44) usa o ULTIMO descritor de IRQ da lista — o
-    // IRQ do canal primario (14) fica por ultimo p/ o canal 0 conectar certo
-    if (entry.classCode === 0x01 && entry.subClass === 0x01 &&
-        !(entry.progIf & 0x04)) {
-        resources.push({ type: CmResourceType.PORT,
-                         start: 0x170, length: 8, flags: 0 });
-        resources.push({ type: CmResourceType.PORT,
-                         start: 0x376, length: 1, flags: 0 });
-        resources.push({ type: CmResourceType.INTERRUPT,
-                         level: 15, vector: 0x20 + 15, affinity: 0xFFFFFFFF,
-                         flags: 0x00 });
-    }
-    if (entry.classCode === 0x01 && entry.subClass === 0x01 &&
-        !(entry.progIf & 0x01)) {
+    // recursos no CM_RESOURCE_LIST do PDO. ORDEM que o ataport espera:
+    //  - portas: canal PRIMARIO (0x1F0/0x3F6) ANTES do secundario (0x170/0x376)
+    //    — o canal 0 herda o PRIMEIRO grupo de portas (senao o atapi mapeia o
+    //    canal 0 p/ o secundario, que esta' vazio, e nao acha os discos);
+    //  - IRQs: o IRQ do primario (14) por ULTIMO — o parser do canal (0x27a44)
+    //    usa o ULTIMO descritor de IRQ da lista p/ o canal 0.
+    const ideIsCompatPrimary = entry.classCode === 0x01 &&
+        entry.subClass === 0x01 && !(entry.progIf & 0x01);
+    const ideIsCompatSecondary = entry.classCode === 0x01 &&
+        entry.subClass === 0x01 && !(entry.progIf & 0x04);
+    if (ideIsCompatPrimary) {
         resources.push({ type: CmResourceType.PORT,
                          start: 0x1F0, length: 8, flags: 0 });
         resources.push({ type: CmResourceType.PORT,
                          start: 0x3F6, length: 1, flags: 0 });
+    }
+    if (ideIsCompatSecondary) {
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x170, length: 8, flags: 0 });
+        resources.push({ type: CmResourceType.PORT,
+                         start: 0x376, length: 1, flags: 0 });
+    }
+    // IRQs DEPOIS das portas: secundario (15) antes, primario (14) por ultimo
+    if (ideIsCompatSecondary)
+        resources.push({ type: CmResourceType.INTERRUPT,
+                         level: 15, vector: 0x20 + 15, affinity: 0xFFFFFFFF,
+                         flags: 0x00 });
+    if (ideIsCompatPrimary)
         resources.push({ type: CmResourceType.INTERRUPT,
                          level: 14, vector: 0x20 + 14, affinity: 0xFFFFFFFF,
                          flags: 0x00 });   // edge-triggered (ISA legado)
-    }
     for (const bar of entry.bars) {
         if (bar.value & 1) {   // bit 0 = I/O port
             resources.push({ type: CmResourceType.PORT,

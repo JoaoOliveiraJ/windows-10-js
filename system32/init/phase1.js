@@ -63,6 +63,18 @@ function init() {
         }
     }
 
+    // DIAGNOSTICO (temporario): drena o work item de deteccao do atapi e
+    // despeja as portas IDE que ele usou no scan (ataport-trace)
+    {
+        const Interrupts = require('nano/interrupts');
+        const Ntoskrnl = require('win32/ntoskrnl');
+        for (let drainIndex = 0; drainIndex < 600; drainIndex++) {
+            Interrupts.dispatchPending();
+            Ntoskrnl.runKernelTasks();
+        }
+        require('win32/ataport-trace').dumpResults();
+    }
+
     // rotinas IoRegisterDriverReinitialization rodam agora (como no NT)
     Lifecycle.runReinitializationRoutines();
 }
