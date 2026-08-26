@@ -25,8 +25,11 @@ function init() {
     // mais registrado como \Device\Keyboard; so o decode ASCII dele e' reusado
     // pelo servico de teclado que le do \Device\KeyboardClass0
 
-    // NTFS: disco slave IDE vira D: (se presente)
-    if (AtaPio.present(1)) {
+    // NTFS: o disco IDE e' do atapi.sys da Microsoft (driver real). O nosso
+    // ata-pio.js NAO toca mais no controlador — dois drivers no mesmo IDE
+    // deixam o canal em estado que o atapi nao reconhece. A montagem NTFS
+    // volta quando a pilha atapi->disk estiver de pe.
+    if (false && AtaPio.present(1)) {
         try {
             const ntfs = Ntfs.mount(1);
             ObjectManager.mount('\\NTFS', ntfs);

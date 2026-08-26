@@ -914,6 +914,9 @@ module.exports = {
         //     +0x48 Group(u16)
         //   Version 2 (CONNECT_LINE_BASED): mesmos campos ate SpinLock; a
         //     IRQ vem do CM_RESOURCE_LIST do PDO (device-resources.js)
+        // ATENCAO: InterruptObject e' PKINTERRUPT* (ponteiro p/ a variavel do
+        // chamador). O NT escreve o KINTERRUPT novo EM *(params+0x10), nao no
+        // campo — ler o ponteiro e devolver o objeto no endereco apontado.
         (paramsPointer) => {
             const version = GuestMemory.readGuest32(paramsPointer);
             if (version === 2) {   // CONNECT_LINE_BASED
@@ -932,7 +935,7 @@ module.exports = {
                 // o modo vem do recurso (bit LEVEL_SENSITIVE), como o HAL faz
                 const interruptMode = (interruptResource.flags & 0x02) ? 1 : 0;
                 const status = InterruptObject.ioConnectInterrupt(
-                    paramsPointer + 0x10, serviceRoutine, serviceContext,
+                    GuestMemory.readGuest64(paramsPointer + 0x10), serviceRoutine, serviceContext,
                     spinLockPointer, interruptResource.vector,
                     interruptResource.level, interruptResource.level,
                     interruptMode, 0, 0xFFFFFFFF, 0);
@@ -954,7 +957,7 @@ module.exports = {
                     (vector >>> 0).toString(16) + ' irql ' + irql +
                     ' -> ISR 0x' + serviceRoutine.toString(16));
                 return InterruptObject.ioConnectInterrupt(
-                    paramsPointer + 0x10, serviceRoutine, serviceContext,
+                    GuestMemory.readGuest64(paramsPointer + 0x10), serviceRoutine, serviceContext,
                     spinLockPointer, vector, irql, synchronizeIrql,
                     interruptMode, shareVector, 0xFFFFFFFF, 0);
             }

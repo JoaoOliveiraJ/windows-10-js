@@ -29,7 +29,11 @@ function waitData() {
 }
 
 // le `count` setores (512 bytes) a partir do LBA; drive: 0=master, 1=slave
+let ataPioReadLogCount = 0;
 function readSectors(lba, count, drive) {
+    if (++ataPioReadLogCount <= 3 || (lba >= 14 && lba <= 17))
+        os.debugPrint('[atapio] readSectors lba=' + lba + ' count=' + count +
+                      ' drive=' + drive);
     const out = new Uint8Array(count * 512);
     for (let s = 0; s < count; s++) {
         const l = lba + s;

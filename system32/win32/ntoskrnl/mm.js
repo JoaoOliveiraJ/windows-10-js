@@ -160,10 +160,11 @@ module.exports = {
             return 0;
         },
         // MmAllocateMappingAddress(size, tag) -> VA reservada: alocada do
-        // guest pool (identidade) e registrada — fica FORA do alcance de
-        // outras alocacoes ate o free, como a VA reservada do NT
+        // guest pool ALINHADA A PAGINA (o remapeamento em
+        // MmMapLockedPagesWithReservedMapping trabalha por pagina) e
+        // registrada — fica FORA do alcance de outras alocacoes ate o free
         (size, tag) => {
-            const va = GuestMemory.guestAllocBytes(size);
+            const va = GuestMemory.guestAllocAligned(size, 0x1000, true);
             if (!va) return 0;
             reservedMappings.set(va >>> 0, { size: size >>> 0, tag: tag >>> 0 });
             return va;
@@ -175,11 +176,23 @@ module.exports = {
             return 0;
         },
         // MmMapLockedPagesWithReservedMapping(va, tag, mdl, cacheType) -> VA:
-        // exige a VA reservada (como o NT); grava no MDL e marca mapeado
+        // exige a VA reservada (como o NT) e REMAPEIA as paginas da VA para
+        // as paginas fisicas do MDL (a semantica real: a VA reservada passa
+        // a apontar para o buffer do MDL — a CPU le os dados DMA dali)
         (virtualAddress, _tag, mdlPointer, _cacheType) => {
             if (!reservedMappings.has(virtualAddress >>> 0)) return 0;
             const MDL = NtAbi.MDL;
+            const byteCount = GuestMemory.readGuest32(mdlPointer + MDL.BYTE_COUNT);
             const byteOffset = GuestMemory.readGuest32(mdlPointer + MDL.BYTE_OFFSET);
+            const pageCount = Math.ceil((byteOffset + byteCount) / 0x1000);
+            for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+                const pfn = GuestMemory.readGuest64(
+                    mdlPointer + MDL.PFN_ARRAY + pageIndex * 8);
+                if (!Paging.mapPage(virtualAddress + pageIndex * 0x1000,
+                                    Math.floor(pfn) * 0x1000,
+                                    Paging.PAGE_PRESENT | Paging.PAGE_RW))
+                    return 0;
+            }
             const mappedAddress = virtualAddress + byteOffset;
             GuestMemory.writeGuest64(mdlPointer + MDL.MAPPED_SYSTEM_VA,
                                      mappedAddress);
@@ -188,9 +201,16 @@ module.exports = {
                 MDL.FLAG_MAPPED_TO_SYSTEM_VA);
             return mappedAddress;
         },
-        // MmUnmapReservedMapping(va, tag, mdl)
+        // MmUnmapReservedMapping(va, tag, mdl): desfaz o remapeamento
         (_virtualAddress, _tag, mdlPointer) => {
             const MDL = NtAbi.MDL;
+            const byteCount = GuestMemory.readGuest32(mdlPointer + MDL.BYTE_COUNT);
+            const byteOffset = GuestMemory.readGuest32(mdlPointer + MDL.BYTE_OFFSET);
+            const pageCount = Math.ceil((byteOffset + byteCount) / 0x1000);
+            const base = GuestMemory.readGuest64(mdlPointer + MDL.MAPPED_SYSTEM_VA) -
+                         byteOffset;
+            for (let pageIndex = 0; pageIndex < pageCount; pageIndex++)
+                Paging.unmapPage(base + pageIndex * 0x1000);
             GuestMemory.writeGuest16(mdlPointer + MDL.MDL_FLAGS,
                 GuestMemory.readGuest16(mdlPointer + MDL.MDL_FLAGS) &
                 ~MDL.FLAG_MAPPED_TO_SYSTEM_VA);

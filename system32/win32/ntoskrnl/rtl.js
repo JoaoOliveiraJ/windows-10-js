@@ -105,7 +105,8 @@ function queryRegistryValues(relativeTo, pathPointer, queryTablePointer,
     const keyHandle = Registry.open(keyPath);
     if (!keyHandle) return 0xC0000034 | 0;
     let cursor = queryTablePointer;
-    for (;;) {
+    for (let entryIndex = 0; ; entryIndex++) {
+        if (entryIndex > 64) break;   // tabela sem terminador (defesa)
         const queryRoutine = GuestMemory.readGuest64(cursor);
         const flags = GuestMemory.readGuest32(cursor + 8);
         const namePointer = GuestMemory.readGuest64(cursor + 0x10);
